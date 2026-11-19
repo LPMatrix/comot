@@ -1,0 +1,128 @@
+{
+  "language": "pcm",
+  "name": "Nigerian Pidgin",
+  "pack_version": "pcm-0.0.1-draft",
+  "status": "draft_unreviewed",
+  "notes": "DRAFT SKELETON. source_en is a plain-English starting point for the review group to redraft in Pidgin. It is not a translation and must not be read aloud to participants. text and audio stay null until native speakers from the community draft, record and sign off each item. The host's ethics-approved study wording is added by the host.",
+  "review": {
+    "signed_off_by": [],
+    "signed_off_at": null
+  },
+  "items": [
+    {
+      "id": "explain.intro",
+      "kind": "explain",
+      "source_en": "We would like to record your voice. Before you decide, we will tell you what will happen to the recording. You can say no to any part and nothing bad will happen to you.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "explain.what_happens",
+      "kind": "explain",
+      "source_en": "Your recording will be kept safe. We give you a short code instead of using your name. The people who work with the recording will not see your name.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "explain.withdraw",
+      "kind": "explain",
+      "source_en": "You can change your mind at any time. You do not have to give a reason. Tell the health worker your code, or use the status line, and we will stop using your recording.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "choice.record",
+      "kind": "choice",
+      "use": "record",
+      "source_en": "Do you agree that we record your voice?",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "choice.research",
+      "kind": "choice",
+      "use": "research",
+      "source_en": "Do you agree that this team uses your recording for research?",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "explain.model_limit",
+      "kind": "explain",
+      "source_en": "Some teams use recordings to teach a computer program. If you agree, we will keep your recording out of any program trained after you ask us to stop. But we cannot take your recording out of a program that was already trained. Results that were already published also cannot be changed. They do not show who you are.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "choice.model_training",
+      "kind": "choice",
+      "use": "model_training",
+      "source_en": "Do you agree that your recording is used to teach computer programs?",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "choice.external_share",
+      "kind": "choice",
+      "use": "external_share",
+      "source_en": "Do you agree that we share your recording with other teams outside this project? They must follow the same rules and must delete it if you ask.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "choice.retain_after_project",
+      "kind": "choice",
+      "use": "retain_after_project",
+      "source_en": "Do you agree that we keep your recording after this project ends?",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "choice.recontact",
+      "kind": "choice",
+      "use": "recontact",
+      "source_en": "Do you agree that we contact you again, for example to tell you about changes?",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "teachback.1",
+      "kind": "teach_back",
+      "source_en": "Can you tell me: if you change your mind, do you have to give a reason?",
+      "text": null,
+      "audio": null,
+      "expected_answer": "no"
+    },
+    {
+      "id": "teachback.2",
+      "kind": "teach_back",
+      "source_en": "Can you tell me: will your name be on the recording that the research team uses?",
+      "text": null,
+      "audio": null,
+      "expected_answer": "no"
+    },
+    {
+      "id": "teachback.3",
+      "kind": "teach_back",
+      "source_en": "Can you tell me: if you agreed to teach computer programs and a program was already trained, can we take your recording out of it?",
+      "text": null,
+      "audio": null,
+      "expected_answer": "no"
+    },
+    {
+      "id": "teachback.4",
+      "kind": "teach_back",
+      "source_en": "Can you tell me: can you say yes to research but no to sharing with other teams?",
+      "text": null,
+      "audio": null,
+      "expected_answer": "yes"
+    },
+    {
+      "id": "close.code",
+      "kind": "explain",
+      "source_en": "Here is your code. Keep it safe. You can use it later to ask what happened to your recording, or to stop its use.",
+      "text": null,
+      "audio": null
+    }
+  ]
+}
