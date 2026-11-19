@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/comot/comot/schema/log_entry.schema.json",
+  "title": "Comot audit log entry",
+  "description": "One entry in the hash-chained, append-only audit log. It holds pseudonymous ids and the hash of the event payload, never names, phone numbers or recording content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["seq", "time", "actor_id", "event_type", "object_id", "payload_hash", "prev_hash", "hash"],
+  "properties": {
+    "seq": { "type": "integer", "minimum": 1 },
+    "time": { "type": "string", "format": "date-time" },
+    "actor_id": { "type": "string" },
+    "event_type": {
+      "enum": [
+        "participant_created", "consent_recorded", "consent_changed", "artifact_registered",
+        "registration_refused", "training_check", "withdrawal_received", "action_created",
+        "action_completed", "action_overdue", "receipt_issued"
+      ]
+    },
+    "object_id": { "type": "string" },
+    "payload_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "prev_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
