@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/comot/comot/schema/consent_record.schema.json",
+  "title": "Comot consent record",
+  "description": "One version of one participant's consent in one project. Records are append-only: a change is a new version whose prev_hash is the hash of the record before it. No names, phone numbers or recording content belong here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "consent_id", "participant_id", "project_id", "version", "script_version", "language",
+    "choices", "capture_method", "chw_id", "device_id", "teach_back_score",
+    "is_minor", "guardian_consent", "assent", "created_at", "prev_hash", "hash"
+  ],
+  "properties": {
+    "consent_id": { "type": "string", "pattern": "^c_[0-9a-f]{12}$" },
+    "participant_id": { "type": "string", "pattern": "^p_[0-9a-f]{12}$" },
+    "project_id": { "type": "string", "minLength": 1 },
+    "version": { "type": "integer", "minimum": 1 },
+    "script_version": { "type": "string", "description": "Version of the signed-off consent script the participant heard, for example ha-1.3." },
+    "language": { "type": "string", "description": "BCP 47 style tag, for example pcm, ha, yo." },
+    "choices": {
+      "type": "object",
+      "description": "Each choice is an explicit true or false. Silence is stored as false. No other use can be true when record is false.",
+      "additionalProperties": false,
+      "required": ["record", "research", "model_training", "external_share", "retain_after_project", "recontact"],
+      "properties": {
+        "record": { "type": "boolean" },
+        "research": { "type": "boolean" },
+        "model_training": { "type": "boolean" },
+        "external_share": { "type": "boolean" },
+        "retain_after_project": { "type": "boolean" },
+        "recontact": { "type": "boolean" }
+      }
+    },
+    "capture_method": {
+      "enum": [
+        "spoken_yes_no", "button_press", "spoken_confirmed_by_chw", "chw_confirmed",
+        "withdrawal_participant_code", "withdrawal_chw", "withdrawal_status_line"
+      ]
+    },
+    "chw_id": { "type": "string" },
+    "device_id": { "type": "string" },
+    "teach_back_score": { "type": ["string", "null"], "pattern": "^[0-9]+/[0-9]+$" },
+    "is_minor": { "type": "boolean" },
+    "guardian_consent": { "type": ["boolean", "null"] },
+    "assent": { "type": ["boolean", "null"] },
+    "created_at": { "type": "string", "format": "date-time" },
+    "prev_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
