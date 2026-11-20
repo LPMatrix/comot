@@ -33,29 +33,31 @@ uv run pytest
 from comot import Comot
 
 comot = Comot()
-pid, code = comot.create_participant("chw_17")      # no name or phone number is stored here
+pid, code = comot.create_participant(actor="chw_17")   # no name or phone number is stored here
 
 comot.record_consent(
     pid, "my-project",
     {"record": True, "research": True, "model_training": False},   # silence counts as no
     script_version="pcm-1.0", language="pcm", capture_method="spoken_yes_no",
-    chw_id="chw_17", device_id="dev_3", teach_back_score="4/5",
+    device_id="dev_3", teach_back_score="4/5", actor="chw_17",
 )
 
-rec = comot.register_recording(pid, "my-project", content=audio_bytes, created_by="chw_17")
+rec = comot.register_recording(pid, "my-project", content=audio_bytes, actor="chw_17")
 
 # The one call a data team makes for every derived copy.
 # Refused, and the refusal logged, if the consent behind any parent does not allow the use.
-transcript = comot.register("transcript", [rec.artifact_id], "research", created_by="asr")
+transcript = comot.register("transcript", [rec.artifact_id], "research", actor="asr")
 
 # Call before every training run. Raises TrainingBlocked here, because training was refused.
-comot.check_training_run([transcript.artifact_id])
+comot.check_training_run([transcript.artifact_id], actor="asr")
 
 # Withdrawal: a new consent version, an action per affected copy, and a signed receipt.
-w = comot.withdraw("my-project", code=code, scope=["research"], channel="participant_code", actor_id="chw_17")
+w = comot.withdraw("my-project", code=code, scope=["research"], channel="participant_code", actor="chw_17")
 for action in comot.actions_for(w.withdrawal_id):
     print(action.kind, action.artifact_id, action.due_at)
 ```
+
+Every call that changes something says who is acting with `actor=`. That name goes into the audit log next to what was done.
 
 ### Keep it in a database
 
@@ -76,6 +78,25 @@ comot.close()
 The signing key is required, because receipts signed last month must still verify. The database remembers which key it was created with and refuses a different one.
 
 See [Operating it](#operating-it) for integrity checks, the identity vault and anchoring.
+
+### Who may do what
+
+By default any named actor may do anything. Give Comot an access policy and each call needs an `Actor` your own system has authenticated, and one of its roles must allow the call:
+
+```python
+from comot import AccessPolicy, Actor, Comot
+
+comot = Comot(access=AccessPolicy.default())    # or AccessPolicy.load("policy.json")
+
+chw = Actor("chw_17", {"health_worker"})
+team = Actor("data_team_2", {"data_team"})
+
+comot.create_participant(actor=chw)             # fine
+comot.withdraw("my-project", code=code, scope="all", channel="chw", actor=team)
+# AccessDenied: data_team_2 may not withdraw. The refusal is in the audit log.
+```
+
+The default roles are health worker, data team, board, auditor and data protection officer. The role table is a small JSON file that a board can read and change, and the audit log records which table was in force. Comot does not authenticate anyone: it trusts the `Actor` it is given. See [docs/operations.md](docs/operations.md#access-control) for the table and what it does not cover.
 
 ## How it works
 
@@ -111,6 +132,7 @@ Comot keeps everything in one SQLite file, keeps names and phone numbers in a se
 - [Persistence](docs/operations.md#persistence): atomic calls, append-only triggers, integrity checks on open, several processes.
 - [Identity vault](docs/operations.md#identity-vault): encrypted, kept apart from consent records, erasable on its own.
 - [Anchoring the audit log](docs/operations.md#anchoring-the-audit-log): what a hash chain alone cannot catch, and the command that closes the gap.
+- [Access control](docs/operations.md#access-control): the default roles, writing your own, and what is logged.
 
 ## Design principles
 
@@ -137,23 +159,23 @@ What exists today:
 - hash-chained audit log, signed export, bundle verifier
 - SQLite persistence with atomic operations, append-only triggers, and integrity checks on open
 - an encrypted identity vault, separate from the consent database
+- role-based access control with a policy a board can read, and every refusal logged
 - audit log anchoring to an external file, and verification against it
 - language pack loader and release gate
-- a synthetic-data demo and 96 tests
+- a synthetic-data demo and 189 tests
 
 Known limits:
 
 - Receipts and exports are signed with HMAC, which only proves integrity to someone holding the key. An asymmetric signature is needed for independent auditors.
 - An anchor protects the log only up to the moment it was published. Something rewritten after the last anchor goes unnoticed until the next one.
 - `verify_bundle` cross-checks consent records against the log. It does not yet cross-check artifacts, actions or receipts.
-- There are no access roles yet: anyone who can call Comot can call everything. Put it behind your own authentication.
+- Access control trusts the `Actor` it is given and guards Comot's methods only. It does not authenticate callers, and it does not stop code that holds the `Comot` object, or someone who owns the database file, from reading state directly. Authenticate callers yourself and keep the object behind your service.
 - SQLite suits one host and a small team. There is no key rotation for the signing or vault keys, and losing a key loses the ability to verify receipts or read the vault.
 - Nothing here is legal advice. Check any deployment against the data protection law that applies to you. The design assumes spoken consent is lawful and treats voice and health data as sensitive by default.
 
 Planned:
 
 - a service with a documented API and a PostgreSQL store behind the same interface
-- access roles: health worker, data team, board, auditor, data protection officer
 - key rotation, and an asymmetric signature so auditors can verify without a shared key
 - an offline field app for collecting spoken consent on low-cost Android phones
 - board-owned access policy and a request-and-licence flow for outside teams
@@ -182,6 +204,7 @@ src/comot/
   log.py         hash-chained audit log
   store.py       SQLite store (and the no-op in-memory store)
   anchor.py      publish and verify audit log anchors
+  access.py      actors, roles and the access policy
   vault.py       encrypted identity vault
   core.py        the Comot service object
   bundle.py      verify an exported bundle
