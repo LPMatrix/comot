@@ -40,3 +40,44 @@ def make_chain(comot, pid, content=b"audio"):
     ds = comot.register("dataset_version", [tr.artifact_id], "model_training", created_by="dt")
     model = comot.register("model_version", [ds.artifact_id], "model_training", created_by="dt")
     return rec, tr, ds, model
+
+
+@pytest.fixture
+def signer():
+    from comot import HmacSigner
+
+    return HmacSigner(b"s" * 32)
+
+
+@pytest.fixture
+def dbpath(tmp_path):
+    return tmp_path / "comot.db"
+
+
+@pytest.fixture
+def open_db(dbpath, signer, clock):
+    """Open the same database again, as a new process would. Closes everything at the end."""
+    opened = []
+
+    def _open(**kwargs):
+        c = Comot.open(dbpath, signer=signer, clock=clock, **kwargs)
+        opened.append(c)
+        return c
+
+    yield _open
+    for c in opened:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+class ListSink:
+    """An anchor sink that keeps anchors in a list, standing in for somewhere external."""
+
+    def __init__(self):
+        self.anchors = []
+
+    def publish(self, anchor):
+        self.anchors.append(anchor)
+        return "list"
