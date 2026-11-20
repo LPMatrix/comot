@@ -51,14 +51,14 @@ def test_taking_a_use_away_must_go_through_withdraw(comot):
 
 
 def test_minor_needs_guardian_and_assent(comot):
-    for kwargs in ({}, {"guardian_consent": True}, {"guardian_consent": True, "assent": False}):
+    for kwargs in ({}, {"guardian_consent": True, "guardian_verification": "guardian_present"}, {"guardian_consent": True, "assent": False, "guardian_verification": "guardian_present"}):
         pid, _ = comot.create_participant(actor="chw1")
         with pytest.raises(ConsentError):
             comot.record_consent(
                 pid, PROJECT, {"record": True}, script_version="t-1", language="pcm",
                 capture_method="spoken_yes_no", actor="chw1", device_id="d", is_minor=True, **kwargs,
             )
-    make_person(comot, {"record": True}, is_minor=True, guardian_consent=True, assent=True)
+    make_person(comot, {"record": True}, is_minor=True, guardian_consent=True, assent=True, guardian_verification="guardian_present")
 
 
 def test_minor_who_refuses_everything_is_recorded(comot):

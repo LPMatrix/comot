@@ -53,13 +53,14 @@ def run_demo(
     say("1. Four synthetic participants give different consent")
     everything = {"record": True, "research": True, "model_training": True, "external_share": True}
     people = {
-        "A (all uses)": consent(everything),
+        "A (all uses)": consent(everything, transfer_risk_explained=True),
         "B (research only, no training)": consent({"record": True, "research": True, "model_training": False}),
         "C (no outside sharing)": consent({"record": True, "research": True, "model_training": True}),
         "D (minor, guardian + assent)": consent(
             {"record": True, "research": True, "model_training": True},
             is_minor=True,
             guardian_consent=True,
+            guardian_verification="guardian_present",
             assent=True,
         ),
     }
@@ -106,12 +107,15 @@ def run_demo(
         [transcripts["A (all uses)"].artifact_id],
         "external_share",
         holder="lic_0001",
+        destination_country="GH",
+        transfer_basis="consent_after_risk_notice",
         actor=TEAM,
     )
-    out(f"   outside copy {shared.artifact_id} held by lic_0001")
+    out(f"   outside copy {shared.artifact_id} held by lic_0001 in {shared.destination_country}, basis: {shared.transfer_basis}")
     try:
         comot.register(
-            "dataset_version", [transcripts["C (no outside sharing)"].artifact_id], "external_share", holder="lic_0001", actor=TEAM
+            "dataset_version", [transcripts["C (no outside sharing)"].artifact_id], "external_share", holder="lic_0001",
+            destination_country="GH", transfer_basis="consent_after_risk_notice", actor=TEAM,
         )
     except ConsentRefused:
         out("   C's transcript cannot go to an outside team: C said no to sharing")

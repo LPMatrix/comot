@@ -35,7 +35,7 @@ from .log import LogEntry
 from .receipt import Receipt
 from .withdrawal import Action, Withdrawal
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class StoreError(Exception):
@@ -119,6 +119,8 @@ CREATE TABLE consents (
     is_minor INTEGER NOT NULL,
     guardian_consent INTEGER,
     assent INTEGER,
+    guardian_verification TEXT,
+    transfer_risk_explained INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     prev_hash TEXT NOT NULL,
     hash TEXT NOT NULL UNIQUE,
@@ -148,7 +150,9 @@ CREATE TABLE artifacts (
     project_id TEXT,
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    status TEXT NOT NULL
+    status TEXT NOT NULL,
+    destination_country TEXT,
+    transfer_basis TEXT
 );
 CREATE INDEX artifacts_content_hash ON artifacts (content_hash);
 CREATE INDEX artifacts_owner ON artifacts (participant_id, project_id);
@@ -313,12 +317,13 @@ class SqliteStore:
         self._db.execute(
             "INSERT INTO consents (consent_id, participant_id, project_id, version, script_version, language,"
             " choices, capture_method, chw_id, device_id, teach_back_score, is_minor, guardian_consent, assent,"
-            " created_at, prev_hash, hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " guardian_verification, transfer_risk_explained, created_at, prev_hash, hash)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 r.consent_id, r.participant_id, r.project_id, r.version, r.script_version, r.language,
                 json.dumps(r.choices, sort_keys=True), r.capture_method, r.chw_id, r.device_id,
                 r.teach_back_score, int(r.is_minor), _int(r.guardian_consent), _int(r.assent),
-                r.created_at, r.prev_hash, r.hash,
+                r.guardian_verification, int(r.transfer_risk_explained), r.created_at, r.prev_hash, r.hash,
             ),
         )
 
@@ -332,11 +337,13 @@ class SqliteStore:
     def upsert_artifact(self, a: Artifact) -> None:
         self._db.execute(
             "INSERT INTO artifacts (artifact_id, type, content_hash, storage_uri, holder, sharded, participant_id,"
-            " project_id, created_by, created_at, status) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+            " project_id, created_by, created_at, status, destination_country, transfer_basis)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(artifact_id) DO UPDATE SET status = excluded.status",
             (
                 a.artifact_id, a.type, a.content_hash, a.storage_uri, a.holder, int(a.sharded),
                 a.participant_id, a.project_id, a.created_by, a.created_at, a.status,
+                a.destination_country, a.transfer_basis,
             ),
         )
 
@@ -400,6 +407,8 @@ class SqliteStore:
                     choices=json.loads(r["choices"]), capture_method=r["capture_method"], chw_id=r["chw_id"],
                     device_id=r["device_id"], teach_back_score=r["teach_back_score"], is_minor=bool(r["is_minor"]),
                     guardian_consent=_bool(r["guardian_consent"]), assent=_bool(r["assent"]),
+                    guardian_verification=r["guardian_verification"],
+                    transfer_risk_explained=bool(r["transfer_risk_explained"]),
                     created_at=r["created_at"], prev_hash=r["prev_hash"], hash=r["hash"],
                 )
             )
@@ -413,6 +422,7 @@ class SqliteStore:
                 storage_uri=r["storage_uri"], holder=r["holder"], sharded=bool(r["sharded"]),
                 participant_id=r["participant_id"], project_id=r["project_id"], created_by=r["created_by"],
                 created_at=r["created_at"], status=r["status"],
+                destination_country=r["destination_country"], transfer_basis=r["transfer_basis"],
             )
             for r in q("SELECT * FROM artifacts ORDER BY seq")
         ]

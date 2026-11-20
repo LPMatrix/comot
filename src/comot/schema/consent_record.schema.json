@@ -8,7 +8,7 @@
   "required": [
     "consent_id", "participant_id", "project_id", "version", "script_version", "language",
     "choices", "capture_method", "chw_id", "device_id", "teach_back_score",
-    "is_minor", "guardian_consent", "assent", "created_at", "prev_hash", "hash"
+    "is_minor", "guardian_consent", "assent", "guardian_verification", "transfer_risk_explained", "created_at", "prev_hash", "hash"
   ],
   "properties": {
     "consent_id": { "type": "string", "pattern": "^c_[0-9a-f]{12}$" },
@@ -43,6 +43,14 @@
     "is_minor": { "type": "boolean" },
     "guardian_consent": { "type": ["boolean", "null"] },
     "assent": { "type": ["boolean", "null"] },
+    "guardian_verification": {
+      "description": "How the child's age and the guardian's consent were checked. Set when a guardian consented, otherwise null. Never the document or its number.",
+      "enum": ["government_id_seen", "guardian_present", "facility_record", "other_documented", null]
+    },
+    "transfer_risk_explained": {
+      "type": "boolean",
+      "description": "True when the participant was told the risks of copies going to a country without adequate data protection."
+    },
     "created_at": { "type": "string", "format": "date-time" },
     "prev_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }

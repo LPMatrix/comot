@@ -16,11 +16,11 @@ from .access import AccessDenied, AccessPolicy, Actor
 from .anchor import Anchor, AnchorSink
 from .bundle import verify_state
 from .clock import Clock, iso, parse, system_clock
-from .consent import CAPTURE_METHODS, PURPOSES, USES, ConsentRecord, normalize_choices
+from .consent import CAPTURE_METHODS, PURPOSES, USES, ConsentRecord, check_guardian_verification, normalize_choices
 from .errors import ComotError, ConsentError, ConsentRefused, StoreIntegrityError, TrainingBlocked, UnknownObject
 from .hashing import GENESIS, canonical, sha256_hex
 from .ids import new_code, new_id
-from .lineage import ARTIFACT_TYPES, INTERNAL, Artifact, LineageEdge, LineageGraph
+from .lineage import ARTIFACT_TYPES, INTERNAL, Artifact, LineageEdge, LineageGraph, check_transfer
 from .log import AuditLog
 from .receipt import (
     LIMIT_MODEL_WEIGHTS,
@@ -285,12 +285,20 @@ class Comot:
         is_minor: bool = False,
         guardian_consent: bool | None = None,
         assent: bool | None = None,
+        guardian_verification: str | None = None,
+        transfer_risk_explained: bool = False,
     ) -> ConsentRecord:
         """Record a participant's choices as a new, append-only consent version.
 
         A missing or None answer counts as "no". A change that takes a use
         away must go through ``withdraw`` so every copy gets an action. The
         actor is recorded as the person who captured it.
+
+        For a participant under 18, ``guardian_verification`` says how the age and
+        the guardian's consent were checked (see ``GUARDIAN_VERIFICATION``).
+        ``transfer_risk_explained`` records that the participant was told the
+        risks of copies going to a country without adequate protection, which a
+        copy sent abroad on the strength of consent depends on.
         """
         actor_id = self._authorize(actor, "record_consent")
         if capture_method not in CAPTURE_METHODS[:4]:
@@ -300,6 +308,9 @@ class Comot:
             raise ConsentError("a participant under 18 needs both guardian consent and the young person's assent")
         if not is_minor and (guardian_consent is not None or assent is not None):
             raise ConsentError("guardian consent and assent apply to participants under 18 only")
+        check_guardian_verification(guardian_consent, guardian_verification)
+        if not isinstance(transfer_risk_explained, bool):
+            raise ConsentError("transfer_risk_explained must be True or False")
 
         with self._txn():  # what follows depends on current state, so read it under the lock
             if participant_id not in self._participants:
@@ -323,6 +334,8 @@ class Comot:
                 is_minor=is_minor,
                 guardian_consent=guardian_consent,
                 assent=assent,
+                guardian_verification=guardian_verification,
+                transfer_risk_explained=transfer_risk_explained,
                 actor_id=actor_id,
             )
 
@@ -380,6 +393,8 @@ class Comot:
                     participant_id=participant_id,
                     project_id=project_id,
                     created_by=created_by,
+                    destination_country=None,
+                    transfer_basis=None,
                 )
         if refused:  # raised after the transaction, so the logged refusal is kept
             raise refused
@@ -396,12 +411,20 @@ class Comot:
         storage_uri: str | None = None,
         holder: str = INTERNAL,
         sharded: bool = False,
+        destination_country: str | None = None,
+        transfer_basis: str | None = None,
         actor: Actor | str,
     ) -> Artifact:
         """Register a derived copy. This is the one call a data team makes.
 
         Refused, and the refusal logged, if the consent behind any parent does
         not allow the intended use.
+
+        A copy held outside (``holder`` is not internal) also needs
+        ``destination_country`` (a two-letter code) and ``transfer_basis`` (see
+        ``TRANSFER_BASES``), which are recorded as the basis for the transfer. If
+        the basis is ``consent_after_risk_notice``, every source participant must
+        have been told the risks of transfer abroad.
         """
         created_by = self._authorize(actor, "register")
         if type not in ARTIFACT_TYPES or type == "recording":
@@ -410,6 +433,7 @@ class Comot:
             raise ValueError(f"purpose must be one of {PURPOSES}")
         if not parents:
             raise ValueError("a derived copy needs at least one parent")
+        check_transfer(holder, destination_country, transfer_basis)
 
         # Some uses are implied by what is being made or where it goes.
         required = [purpose]
@@ -424,6 +448,13 @@ class Comot:
             for parent in parents:
                 for use in required:
                     blockers += self._check_use(parent, use).blockers
+            if transfer_basis == "consent_after_risk_notice" and destination_country != "NG":
+                for parent in parents:
+                    for r in self.graph.source_recordings(parent):
+                        rec = self.graph.artifacts[r]
+                        consent = self.latest_consent(rec.participant_id or "", rec.project_id or "")
+                        if consent is None or not consent.transfer_risk_explained:
+                            blockers.append((r, "participant was not told the risks of a transfer abroad"))
             if blockers:
                 blockers = sorted(set(blockers))
                 self._refuse(created_by, type, list(parents), purpose, blockers)
@@ -442,6 +473,8 @@ class Comot:
                     participant_id=None,
                     project_id=None,
                     created_by=created_by,
+                    destination_country=destination_country,
+                    transfer_basis=transfer_basis,
                 )
         if refused:  # raised after the transaction, so the logged refusal is kept
             raise refused
@@ -461,6 +494,8 @@ class Comot:
         participant_id: str | None,
         project_id: str | None,
         created_by: str,
+        destination_country: str | None,
+        transfer_basis: str | None,
     ) -> Artifact:
         if content is not None:
             content_hash = sha256_hex(content)
@@ -476,6 +511,8 @@ class Comot:
             project_id=project_id,
             created_by=created_by,
             created_at=now,
+            destination_country=destination_country,
+            transfer_basis=transfer_basis,
         )
         edges = [
             LineageEdge(parent_id=p, child_id=artifact.artifact_id, purpose=u, created_by=created_by, created_at=now)
@@ -646,6 +683,8 @@ class Comot:
                 is_minor=current.is_minor,
                 guardian_consent=current.guardian_consent,
                 assent=current.assent,
+                guardian_verification=current.guardian_verification,
+                transfer_risk_explained=current.transfer_risk_explained,
             )
             withdrawal = Withdrawal(
                 withdrawal_id=new_id("w"),

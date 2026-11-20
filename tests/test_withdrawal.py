@@ -65,7 +65,7 @@ def test_outside_holder_gets_a_notice_not_a_delete(comot):
     pid, code = make_person(comot)
     rec = comot.register_recording(pid, PROJECT, content=b"x", actor="chw1")
     tr = comot.register("transcript", [rec.artifact_id], "research", actor="pipeline")
-    comot.register("transcript", [tr.artifact_id], "external_share", holder="lic_9", actor="pipeline")
+    comot.register("transcript", [tr.artifact_id], "external_share", holder="lic_9", destination_country="NG", transfer_basis="within_nigeria", actor="pipeline")
     w = comot.withdraw(PROJECT, code=code, channel="chw", actor="chw1")
     assert ("transcript", "notify") in kinds(comot, w)
     notice = next(a for a in comot.actions_for(w.withdrawal_id) if a.kind == "notify")

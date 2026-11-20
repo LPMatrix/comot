@@ -36,6 +36,27 @@ CAPTURE_METHODS: tuple[str, ...] = (
     "withdrawal_status_line",
 )
 
+# How the person checking a minor's consent confirmed the child's age and that a
+# guardian really agreed (Nigeria Data Protection Act s.31(2)). Never the
+# document itself or its number.
+GUARDIAN_VERIFICATION: tuple[str, ...] = (
+    "government_id_seen",  # an ID was shown and looked at; nothing from it is stored
+    "guardian_present",  # the guardian was there in person and agreed
+    "facility_record",  # the age and guardian are on a health facility record
+    "other_documented",  # another way, written up in the project's own procedure
+)
+
+
+def check_guardian_verification(guardian_consent: bool | None, verification: str | None) -> None:
+    """A guardian's consent needs a stated way it was checked, and nothing else does."""
+    if guardian_consent is True:
+        if verification not in GUARDIAN_VERIFICATION:
+            raise ConsentError(
+                f"say how the child's age and the guardian's consent were checked: one of {list(GUARDIAN_VERIFICATION)}"
+            )
+    elif verification is not None:
+        raise ConsentError("guardian_verification applies only when a guardian consented")
+
 
 def normalize_choices(answers: Mapping[str, bool | None]) -> dict[str, bool]:
     """Turn raw answers into the stored choices.
@@ -74,6 +95,8 @@ class ConsentRecord:
     is_minor: bool
     guardian_consent: bool | None
     assent: bool | None
+    guardian_verification: str | None
+    transfer_risk_explained: bool  # the participant was told the risks of copies going abroad
     created_at: str
     prev_hash: str
     hash: str = field(default="")

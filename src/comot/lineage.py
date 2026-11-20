@@ -21,6 +21,36 @@ ARTIFACT_TYPES: tuple[str, ...] = (
 STATUSES: tuple[str, ...] = ("active", "tainted", "deleted", "retired")
 
 INTERNAL = "internal"
+NIGERIA = "NG"
+
+# Why a copy may leave Nigeria (Nigeria Data Protection Act ss.41-43). Comot records
+# the basis the caller asserts; it does not judge whether a country is adequate.
+TRANSFER_BASES: tuple[str, ...] = (
+    "within_nigeria",  # not a transfer: the holder is in Nigeria
+    "adequacy_decision",  # the destination has an adequate level of protection (s.42)
+    "approved_instrument",  # binding rules or contract terms the Commission approved (s.42(5))
+    "consent_after_risk_notice",  # the participant was told the risks of no adequate protection (s.43(1)(a))
+)
+
+
+def check_transfer(holder: str, destination_country: str | None, transfer_basis: str | None) -> None:
+    """A copy held outside needs a destination and a basis. An internal one has neither."""
+    if holder == INTERNAL:
+        if destination_country is not None or transfer_basis is not None:
+            raise ValueError("destination_country and transfer_basis apply only to copies held outside")
+        return
+    if not (
+        isinstance(destination_country, str)
+        and len(destination_country) == 2
+        and destination_country.isascii()
+        and destination_country.isalpha()
+        and destination_country.isupper()
+    ):
+        raise ValueError("a copy held outside needs destination_country as a two-letter code such as 'NG'")
+    if transfer_basis not in TRANSFER_BASES:
+        raise ValueError(f"a copy held outside needs transfer_basis, one of {list(TRANSFER_BASES)}")
+    if (destination_country == NIGERIA) != (transfer_basis == "within_nigeria"):
+        raise ValueError("'within_nigeria' goes with destination 'NG', and only with it")
 
 
 @dataclass
@@ -36,6 +66,8 @@ class Artifact:
     created_by: str
     created_at: str
     status: str = "active"
+    destination_country: str | None = None  # copies held outside only
+    transfer_basis: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -43,7 +43,7 @@ def test_outside_holder_needs_sharing_consent(comot):
     rec = comot.register_recording(pid, PROJECT, content=b"x", actor="chw1")
     tr = comot.register("transcript", [rec.artifact_id], "research", actor="pipeline")
     with pytest.raises(ConsentRefused):
-        comot.register("transcript", [tr.artifact_id], "research", holder="lic_1", actor="pipeline")
+        comot.register("transcript", [tr.artifact_id], "research", holder="lic_1", destination_country="NG", transfer_basis="within_nigeria", actor="pipeline")
 
 
 def test_strictest_consent_wins_in_a_mixed_dataset(comot):
