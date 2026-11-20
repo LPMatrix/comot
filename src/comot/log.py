@@ -24,6 +24,10 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "action_completed",
         "action_overdue",
         "receipt_issued",
+        "anchor_published",
+        "identity_stored",
+        "identity_read",
+        "identity_deleted",
     }
 )
 

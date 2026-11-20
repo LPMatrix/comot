@@ -14,7 +14,8 @@
       "enum": [
         "participant_created", "consent_recorded", "consent_changed", "artifact_registered",
         "registration_refused", "training_check", "withdrawal_received", "action_created",
-        "action_completed", "action_overdue", "receipt_issued"
+        "action_completed", "action_overdue", "receipt_issued", "anchor_published",
+        "identity_stored", "identity_read", "identity_deleted"
       ]
     },
     "object_id": { "type": "string" },
