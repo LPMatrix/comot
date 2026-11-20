@@ -4,7 +4,7 @@
 
 *Comot* is Nigerian Pidgin for "leave" or "come out". It is built first for voice data in Pidgin, Hausa and Yoruba, but nothing in the core is specific to one language or project.
 
-> **Status: v0.0, early prototype.** A Python library with an in-memory store. APIs will change. Do not use it to hold real participants' consent yet. See [Status](#status).
+> **Status: v0.1, early prototype.** A Python library backed by SQLite. APIs will change. Do not use it to hold real participants' consent yet. See [Status](#status).
 
 ## Why
 
@@ -18,7 +18,7 @@ Comot keeps a record of each person's choices, tracks every derived copy back to
 
 ## Install and try it
 
-Requires Python 3.10+. There are no runtime dependencies.
+Requires Python 3.10+. The core has no runtime dependencies. The identity vault needs `cryptography`, installed with `pip install -e ".[vault]"`.
 
 ```bash
 git clone <this repo> && cd comot
@@ -57,6 +57,24 @@ for action in comot.actions_for(w.withdrawal_id):
     print(action.kind, action.artifact_id, action.due_at)
 ```
 
+### Keep it in a database
+
+`Comot()` is a plain in-memory object, good for tests and notebooks. To keep state, open a SQLite file:
+
+```bash
+uv run comot keygen signing.key        # a random key, readable only by you. Back it up.
+```
+
+```python
+from comot import Comot, HmacSigner
+
+comot = Comot.open("comot.db", signer=HmacSigner.from_file("signing.key"))
+# ... use it exactly as above. Every call is committed before it returns.
+comot.close()
+```
+
+The signing key is required, because receipts signed last month must still verify. The database remembers which key it was created with and refuses a different one.
+
 ## How it works
 
 **Consent record.** One per participant per project, with six separate choices: record, research, model training, external sharing, keep after the project, contact again. Each is an explicit yes or no, and silence is stored as no. Records are append-only: a change is a new version that points at the hash of the one before it. Participants under 18 need both guardian consent and their own assent. The JSON Schemas are in [`src/comot/schema/`](src/comot/schema/).
@@ -84,6 +102,50 @@ uv run comot demo --export demo.bundle.json
 uv run comot verify demo.bundle.json
 ```
 
+## Persistence
+
+Everything lives in one SQLite file. It is in the standard library, easy to back up, and enough for a small team. The store sits behind a small interface, so a PostgreSQL backend can replace it for a larger service.
+
+- **Atomic.** Each Comot call is one transaction. A withdrawal that fails halfway leaves no new consent version, no half-made actions and no stray log entries, and the in-memory state is rebuilt to match.
+- **Append-only in the database itself.** Triggers abort any `UPDATE` or `DELETE` on consent versions, the audit log, lineage edges, receipts, refusals, anchors and participants. They stop mistakes and casual edits. They do not stop someone who owns the file and can drop a trigger, which is what the hash chains and anchors are for.
+- **Checked when opened.** Opening a database re-verifies the consent chain, the audit log and any stored anchors, and refuses a store that fails with `StoreIntegrityError`. `Comot.open(..., verify=False)` opens it anyway so an auditor can look.
+- **More than one process.** Each write takes SQLite's write lock before it reads, and checks refresh from the database, so a second process sees a withdrawal the moment it is committed.
+- **Private by default.** The database and key files are created readable only by their owner.
+
+```bash
+uv run comot demo --db demo.db --key-file demo.key   # the demo, kept in a database
+uv run comot check demo.db --key-file demo.key       # verify chains and anchors
+uv run comot export demo.db --key-file demo.key --out demo.bundle.json
+```
+
+## Identity vault
+
+The consent database never holds a name or phone number. Those go in a separate vault: its own SQLite file with its own key, so it can be backed up, locked down and erased on its own.
+
+```python
+from comot import Comot, HmacSigner, IdentityVault, load_key_file
+
+vault = IdentityVault("vault.db", load_key_file("vault.key"))   # a different key from the signing key
+comot = Comot.open("comot.db", signer=HmacSigner.from_file("signing.key"), vault=vault)
+
+comot.store_identity(pid, actor_id="chw_17", name="...", phone="...")
+comot.read_identity(pid, actor_id="dpo_1")      # every read is logged against who made it
+comot.delete_identity(pid, actor_id="dpo_1")    # consent records and audit log are untouched
+```
+
+Records are encrypted with AES-256-GCM and bound to their participant id, so a ciphertext copied onto another row will not open. Only a fixed set of fields is accepted (name, phone, guardian name and phone), so the vault cannot become a place for health data. The audit log records that identity was stored, read or deleted, and by whom, never what it held.
+
+## Anchoring the audit log
+
+A hash chain alone cannot stop someone with write access from rewriting the whole log from the first changed entry onward and recomputing every hash. Anchoring closes that gap: now and then you publish the log's current head hash somewhere the database's writers cannot edit, and anything rewritten before that point no longer matches.
+
+```bash
+uv run comot anchor comot.db --key-file signing.key --out anchors.jsonl   # run daily, for example from cron
+uv run comot check comot.db --key-file signing.key --anchors anchors.jsonl
+```
+
+Keep `anchors.jsonl` somewhere else: another machine, a write-once volume, or a public repository the community board can see. An anchor protects everything before it, so anchor often. A quiet system does not anchor itself in circles; the command does nothing if nothing happened since the last anchor.
+
 ## Design principles
 
 1. **The participant can leave.** A feature that makes withdrawal harder does not ship.
@@ -107,20 +169,26 @@ What exists today:
 - lineage graph, consent-checked registration, pre-training check
 - partial and full withdrawal, per-copy actions, overdue escalation, signed receipts
 - hash-chained audit log, signed export, bundle verifier
+- SQLite persistence with atomic operations, append-only triggers, and integrity checks on open
+- an encrypted identity vault, separate from the consent database
+- audit log anchoring to an external file, and verification against it
 - language pack loader and release gate
-- a synthetic-data demo and 47 tests
+- a synthetic-data demo and 96 tests
 
 Known limits:
 
 - Receipts and exports are signed with HMAC, which only proves integrity to someone holding the key. An asymmetric signature is needed for independent auditors.
-- The audit log is not yet anchored to an external store, so someone with write access could rewrite a whole chain.
+- An anchor protects the log only up to the moment it was published. Something rewritten after the last anchor goes unnoticed until the next one.
 - `verify_bundle` cross-checks consent records against the log. It does not yet cross-check artifacts, actions or receipts.
-- Everything is in memory. There is no persistence, no access roles and no separate identity vault.
+- There are no access roles yet: anyone who can call Comot can call everything. Put it behind your own authentication.
+- SQLite suits one host and a small team. There is no key rotation for the signing or vault keys, and losing a key loses the ability to verify receipts or read the vault.
 - Nothing here is legal advice. Check any deployment against the data protection law that applies to you. The design assumes spoken consent is lawful and treats voice and health data as sensitive by default.
 
 Planned:
 
-- a service with PostgreSQL storage, and a documented API
+- a service with a documented API and a PostgreSQL store behind the same interface
+- access roles: health worker, data team, board, auditor, data protection officer
+- key rotation, and an asymmetric signature so auditors can verify without a shared key
 - an offline field app for collecting spoken consent on low-cost Android phones
 - board-owned access policy and a request-and-licence flow for outside teams
 - status checks by USSD, WhatsApp or a health worker, with messages that reveal nothing on a shared phone
@@ -146,6 +214,9 @@ src/comot/
   withdrawal.py  actions, deadline policy, planning per copy type
   receipt.py     signed receipts, plain-language rendering
   log.py         hash-chained audit log
+  store.py       SQLite store (and the no-op in-memory store)
+  anchor.py      publish and verify audit log anchors
+  vault.py       encrypted identity vault
   core.py        the Comot service object
   bundle.py      verify an exported bundle
   langpack.py    language pack loader and release gate
