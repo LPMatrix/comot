@@ -1,4 +1,5 @@
 """Comot: an open consent and withdrawal layer for Nigerian-language voice data."""
+from .access import DEFAULT_POLICY, OPERATIONS, AccessDenied, AccessPolicy, Actor
 from .anchor import Anchor, FileAnchorSink, read_anchor_file
 from .bundle import verify_bundle
 from .clock import ManualClock
@@ -13,6 +14,11 @@ from .withdrawal import WithdrawalPolicy
 __version__ = "0.1.0"
 
 __all__ = [
+    "AccessDenied",
+    "AccessPolicy",
+    "Actor",
+    "DEFAULT_POLICY",
+    "OPERATIONS",
     "Anchor",
     "Comot",
     "FileAnchorSink",

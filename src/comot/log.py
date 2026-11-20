@@ -28,6 +28,8 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "identity_stored",
         "identity_read",
         "identity_deleted",
+        "access_denied",
+        "access_policy_set",
     }
 )
 

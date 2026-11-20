@@ -15,7 +15,8 @@
         "participant_created", "consent_recorded", "consent_changed", "artifact_registered",
         "registration_refused", "training_check", "withdrawal_received", "action_created",
         "action_completed", "action_overdue", "receipt_issued", "anchor_published",
-        "identity_stored", "identity_read", "identity_deleted"
+        "identity_stored", "identity_read", "identity_deleted",
+        "access_denied", "access_policy_set"
       ]
     },
     "object_id": { "type": "string" },
