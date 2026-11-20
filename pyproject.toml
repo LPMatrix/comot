@@ -1,17 +1,20 @@
 [project]
 name = "comot"
-version = "0.0.1"
-description = "Open consent and withdrawal layer for Nigerian-language voice data (v0.0 prototype)"
+version = "0.1.0"
+description = "Open consent and withdrawal layer for Nigerian-language voice data"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = []
 
+[project.optional-dependencies]
+vault = ["cryptography>=42"]
+
 [project.scripts]
 comot = "comot.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "jsonschema>=4"]
+dev = ["pytest>=8", "jsonschema>=4", "cryptography>=42"]
 
 [build-system]
 requires = ["setuptools>=68"]
