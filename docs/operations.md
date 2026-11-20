@@ -100,5 +100,5 @@ These apply to everything above. They are also listed in the [README](../README.
 - An anchor protects the log only up to the moment it was published. Something rewritten after the last anchor goes unnoticed until the next one.
 - The database triggers stop mistakes and casual edits, not someone who owns the file and can drop a trigger.
 - Losing the signing key loses the ability to verify receipts and exports. Losing the vault key loses the vault. There is no key rotation yet.
-- SQLite suits one host and a small team.
+- SQLite suits one host and a small team. There is no schema migration yet: a database from an older schema version is refused.
 - Access control is only as good as the authentication in front of it, and it guards methods, not the database file.

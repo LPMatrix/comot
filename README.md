@@ -100,9 +100,9 @@ The default roles are health worker, data team, board, auditor and data protecti
 
 ## How it works
 
-**Consent record.** One per participant per project, with six separate choices: record, research, model training, external sharing, keep after the project, contact again. Each is an explicit yes or no, and silence is stored as no. Records are append-only: a change is a new version that points at the hash of the one before it. Participants under 18 need both guardian consent and their own assent. The JSON Schemas are in [`src/comot/schema/`](src/comot/schema/).
+**Consent record.** One per participant per project, with six separate choices: record, research, model training, external sharing, keep after the project, contact again. Each is an explicit yes or no, and silence is stored as no. Records are append-only: a change is a new version that points at the hash of the one before it. Participants under 18 need both guardian consent and their own assent, and the record says how the child's age and the guardian's consent were checked. The JSON Schemas are in [`src/comot/schema/`](src/comot/schema/).
 
-**Lineage.** Every recording, transcript, clip, feature file, dataset version and model version is a node. Each derived copy is registered with its parents and the use it was made for. `check_use` walks back to every source recording and the strictest consent wins: one person who said no blocks the use for the whole dataset. `filter_allowed` returns the subset that is allowed.
+**Lineage.** Every recording, transcript, clip, feature file, dataset version and model version is a node. Each derived copy is registered with its parents and the use it was made for. `check_use` walks back to every source recording and the strictest consent wins: one person who said no blocks the use for the whole dataset. `filter_allowed` returns the subset that is allowed. A copy held outside also records its destination country and the basis for sending it, and if that basis is the participant's consent, every source participant must have been told the risks of a transfer abroad.
 
 **Withdrawal.** Participants can withdraw everything or one use, by code, through a health worker, or by a status line, with no reason asked. The engine walks the lineage graph and creates one action per affected copy. The default deadlines are a starting point and live in `WithdrawalPolicy`, so a community board can set its own.
 
@@ -161,8 +161,9 @@ What exists today:
 - an encrypted identity vault, separate from the consent database
 - role-based access control with a policy a board can read, and every refusal logged
 - audit log anchoring to an external file, and verification against it
-- language pack loader and release gate
-- a synthetic-data demo and 189 tests
+- language pack loader and release gate, which also requires the explanations the law says a person must hear
+- a record of how guardian consent was verified, and of the basis for every transfer outside Nigeria
+- a synthetic-data demo and 241 tests
 
 Known limits:
 
@@ -171,7 +172,7 @@ Known limits:
 - `verify_bundle` cross-checks consent records against the log. It does not yet cross-check artifacts, actions or receipts.
 - Access control trusts the `Actor` it is given and guards Comot's methods only. It does not authenticate callers, and it does not stop code that holds the `Comot` object, or someone who owns the database file, from reading state directly. Authenticate callers yourself and keep the object behind your service.
 - SQLite suits one host and a small team. There is no key rotation for the signing or vault keys, and losing a key loses the ability to verify receipts or read the vault.
-- Nothing here is legal advice. Check any deployment against the data protection law that applies to you. The design assumes spoken consent is lawful and treats voice and health data as sensitive by default.
+- Nothing here is legal advice. The design follows the Nigeria Data Protection Act 2023 and the Commission's 2025 directive, which allow spoken consent, and it treats health-related voice data as sensitive. [docs/legal-notes.md](docs/legal-notes.md) shows how each rule is met and which readings still need a lawyer. Laws outside Nigeria are not covered, and a deployment still owes its own impact assessment and registration.
 
 Planned:
 
@@ -212,7 +213,7 @@ src/comot/
   demo.py cli.py
   schema/        JSON Schema for consent records and log entries
 language_packs/  draft Pidgin skeleton
-docs/            operator notes: persistence, vault, anchoring
+docs/            operator notes, and how the design meets Nigerian law
 tests/
 ```
 
