@@ -1,19 +1,29 @@
 """A lineage and withdrawal demo on synthetic data. No real recordings or people."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 from .clock import ManualClock
 from .core import Comot
 from .errors import ConsentRefused, TrainingBlocked
-from .receipt import render_receipt
+from .receipt import HmacSigner, render_receipt
 
 PROJECT = "demo-synthetic"
 
 
-def run_demo(out: Callable[[str], None] = print) -> Comot:
+def run_demo(
+    out: Callable[[str], None] = print, *, db: str | Path | None = None, key_file: str | Path | None = None
+) -> Comot:
+    """Run the demo in memory, or into a new SQLite file when ``db`` is given."""
     clock = ManualClock()
-    comot = Comot(clock=clock)
+    if db is None:
+        comot = Comot(clock=clock)
+    else:
+        if Path(db).exists():
+            raise FileExistsError(f"{db} already exists; the demo needs a new database")
+        signer = HmacSigner.from_file(key_file, create=True) if key_file else HmacSigner()
+        comot = Comot.open(db, signer=signer, clock=clock)
 
     def say(title: str) -> None:
         out(f"\n== {title}")
