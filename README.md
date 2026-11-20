@@ -75,6 +75,8 @@ comot.close()
 
 The signing key is required, because receipts signed last month must still verify. The database remembers which key it was created with and refuses a different one.
 
+See [Operating it](#operating-it) for integrity checks, the identity vault and anchoring.
+
 ## How it works
 
 **Consent record.** One per participant per project, with six separate choices: record, research, model training, external sharing, keep after the project, contact again. Each is an explicit yes or no, and silence is stored as no. Records are append-only: a change is a new version that points at the hash of the one before it. Participants under 18 need both guardian consent and their own assent. The JSON Schemas are in [`src/comot/schema/`](src/comot/schema/).
@@ -102,49 +104,13 @@ uv run comot demo --export demo.bundle.json
 uv run comot verify demo.bundle.json
 ```
 
-## Persistence
+## Operating it
 
-Everything lives in one SQLite file. It is in the standard library, easy to back up, and enough for a small team. The store sits behind a small interface, so a PostgreSQL backend can replace it for a larger service.
+Comot keeps everything in one SQLite file, keeps names and phone numbers in a separate encrypted vault, and can publish the audit log's head hash outside the database so a rewrite is detectable. Each is covered in [docs/operations.md](docs/operations.md):
 
-- **Atomic.** Each Comot call is one transaction. A withdrawal that fails halfway leaves no new consent version, no half-made actions and no stray log entries, and the in-memory state is rebuilt to match.
-- **Append-only in the database itself.** Triggers abort any `UPDATE` or `DELETE` on consent versions, the audit log, lineage edges, receipts, refusals, anchors and participants. They stop mistakes and casual edits. They do not stop someone who owns the file and can drop a trigger, which is what the hash chains and anchors are for.
-- **Checked when opened.** Opening a database re-verifies the consent chain, the audit log and any stored anchors, and refuses a store that fails with `StoreIntegrityError`. `Comot.open(..., verify=False)` opens it anyway so an auditor can look.
-- **More than one process.** Each write takes SQLite's write lock before it reads, and checks refresh from the database, so a second process sees a withdrawal the moment it is committed.
-- **Private by default.** The database and key files are created readable only by their owner.
-
-```bash
-uv run comot demo --db demo.db --key-file demo.key   # the demo, kept in a database
-uv run comot check demo.db --key-file demo.key       # verify chains and anchors
-uv run comot export demo.db --key-file demo.key --out demo.bundle.json
-```
-
-## Identity vault
-
-The consent database never holds a name or phone number. Those go in a separate vault: its own SQLite file with its own key, so it can be backed up, locked down and erased on its own.
-
-```python
-from comot import Comot, HmacSigner, IdentityVault, load_key_file
-
-vault = IdentityVault("vault.db", load_key_file("vault.key"))   # a different key from the signing key
-comot = Comot.open("comot.db", signer=HmacSigner.from_file("signing.key"), vault=vault)
-
-comot.store_identity(pid, actor_id="chw_17", name="...", phone="...")
-comot.read_identity(pid, actor_id="dpo_1")      # every read is logged against who made it
-comot.delete_identity(pid, actor_id="dpo_1")    # consent records and audit log are untouched
-```
-
-Records are encrypted with AES-256-GCM and bound to their participant id, so a ciphertext copied onto another row will not open. Only a fixed set of fields is accepted (name, phone, guardian name and phone), so the vault cannot become a place for health data. The audit log records that identity was stored, read or deleted, and by whom, never what it held.
-
-## Anchoring the audit log
-
-A hash chain alone cannot stop someone with write access from rewriting the whole log from the first changed entry onward and recomputing every hash. Anchoring closes that gap: now and then you publish the log's current head hash somewhere the database's writers cannot edit, and anything rewritten before that point no longer matches.
-
-```bash
-uv run comot anchor comot.db --key-file signing.key --out anchors.jsonl   # run daily, for example from cron
-uv run comot check comot.db --key-file signing.key --anchors anchors.jsonl
-```
-
-Keep `anchors.jsonl` somewhere else: another machine, a write-once volume, or a public repository the community board can see. An anchor protects everything before it, so anchor often. A quiet system does not anchor itself in circles; the command does nothing if nothing happened since the last anchor.
+- [Persistence](docs/operations.md#persistence): atomic calls, append-only triggers, integrity checks on open, several processes.
+- [Identity vault](docs/operations.md#identity-vault): encrypted, kept apart from consent records, erasable on its own.
+- [Anchoring the audit log](docs/operations.md#anchoring-the-audit-log): what a hash chain alone cannot catch, and the command that closes the gap.
 
 ## Design principles
 
@@ -223,6 +189,7 @@ src/comot/
   demo.py cli.py
   schema/        JSON Schema for consent records and log entries
 language_packs/  draft Pidgin skeleton
+docs/            operator notes: persistence, vault, anchoring
 tests/
 ```
 
