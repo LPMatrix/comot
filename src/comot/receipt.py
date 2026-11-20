@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 from .hashing import canonical
@@ -25,13 +27,28 @@ LIMIT_PUBLISHED_RESULTS = "published_results_unchanged"
 class HmacSigner:
     """Signs receipts and exports with HMAC-SHA256.
 
-    v0.0 limitation: HMAC proves integrity only to someone who holds the key.
+    Current limitation: HMAC proves integrity only to someone who holds the key.
     Before an outside auditor can verify alone, swap in an asymmetric signer
     with the same two methods.
     """
 
     def __init__(self, key: bytes | None = None):
         self.key = key or secrets.token_bytes(32)
+
+    @classmethod
+    def from_file(cls, path: str | Path, *, create: bool = False) -> "HmacSigner":
+        """Load a hex key file. With ``create`` a missing file is made, readable only by its owner."""
+        path = Path(path)
+        if not path.exists():
+            if not create:
+                raise FileNotFoundError(f"no key file at {path}")
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(secrets.token_bytes(32).hex() + "\n")
+        key = bytes.fromhex(path.read_text().strip())
+        if len(key) < 16:
+            raise ValueError(f"{path}: key is too short")
+        return cls(key)
 
     def sign(self, data: bytes) -> str:
         return hmac.new(self.key, data, hashlib.sha256).hexdigest()
