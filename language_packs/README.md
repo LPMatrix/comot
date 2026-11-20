@@ -20,6 +20,15 @@ Rules the loader enforces:
   participant hears that a trained model cannot be undone before choosing;
 - 3 to 5 teach-back questions.
 
+A pack is not releasable unless it also explains, before the first choice, who is
+recording and how to reach them, what the recording is for, who may get copies, how
+long it is kept, that the person can withdraw and can complain to the Nigeria Data
+Protection Commission, and that saying no costs them nothing. The risk of a copy
+going to a country without adequate protection must be heard before the sharing
+choice. The ids are in `comot.langpack.NOTICE_ITEMS`, with the section of the Act
+each one comes from. Items like the study name or the retention period are in
+`[brackets]` and come from the deploying organisation.
+
 Study-specific wording (the study name, the health topic) comes from the
 deploying organisation's ethics-approved text and is added by them. Receipts and
 status messages never carry it.

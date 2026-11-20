@@ -17,9 +17,51 @@
       "audio": null
     },
     {
+      "id": "explain.controller",
+      "kind": "explain",
+      "source_en": "This recording is being made by [project name]. If you have a question, ask your health worker or call [contact].",
+      "text": null,
+      "audio": null
+    },
+    {
       "id": "explain.what_happens",
       "kind": "explain",
       "source_en": "Your recording will be kept safe. We give you a short code instead of using your name. The people who work with the recording will not see your name.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "explain.purposes",
+      "kind": "explain",
+      "source_en": "We will use your recording to [what the study is for]. We only do this because you say yes.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "explain.recipients",
+      "kind": "explain",
+      "source_en": "Only the project team will hear your recording. Other teams or companies will only get a copy if you say yes to that, and we will tell you before you choose.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "explain.retention",
+      "kind": "explain",
+      "source_en": "We will keep your recording for [how long]. After that we delete it, unless you said we may keep it.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "explain.no_penalty",
+      "kind": "explain",
+      "source_en": "If you say no, nothing changes. You still get the same care and the same help.",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "explain.complaint",
+      "kind": "explain",
+      "source_en": "If you are not happy with how we use your recording, you can tell us, or you can complain to the Nigeria Data Protection Commission.",
       "text": null,
       "audio": null
     },
@@ -58,6 +100,13 @@
       "kind": "choice",
       "use": "model_training",
       "source_en": "Do you agree that your recording is used to teach computer programs?",
+      "text": null,
+      "audio": null
+    },
+    {
+      "id": "explain.transfer_risk",
+      "kind": "explain",
+      "source_en": "Some teams that ask for copies work in other countries. Some countries do not protect personal information as well as Nigeria does. If you say yes to sharing, a copy could go to one of them. Think about this before you choose.",
       "text": null,
       "audio": null
     },

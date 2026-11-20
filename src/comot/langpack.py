@@ -13,6 +13,24 @@ from typing import Any
 
 from .consent import USES
 
+# What a person must hear before they agree, and why. These come from the Nigeria
+# Data Protection Act: s.26(4) and s.27(1) (what to tell them before collecting),
+# s.43(1)(a) (the risks of a transfer abroad), and GAID Art. 17(7)(c) (saying no
+# must cost them nothing). A pack that leaves one out cannot be released.
+NOTICE_ITEMS: dict[str, str] = {
+    "explain.controller": "who is making the recording and how to reach them",
+    "explain.purposes": "what the recording is for, and that it rests on their consent",
+    "explain.recipients": "who may receive copies",
+    "explain.withdraw": "that they can withdraw at any time",
+    "explain.retention": "how long the recording is kept",
+    "explain.complaint": "that they can complain to the Nigeria Data Protection Commission",
+    "explain.no_penalty": "that saying no costs them nothing",
+    "explain.transfer_risk": "the risk if a copy goes to a country without adequate protection",
+}
+# Everything above is heard before the first choice, except the transfer risk,
+# which is heard before the choice about sharing outside.
+_BEFORE_ANY_CHOICE = tuple(i for i in NOTICE_ITEMS if i != "explain.transfer_risk")
+
 
 class PackError(ValueError):
     """A language pack is malformed."""
@@ -36,12 +54,28 @@ class LanguagePack:
             reasons.append(f"status is {self.status!r}, not 'signed_off'")
         if not self.signed_off_by:
             reasons.append("no reviewers recorded")
+        reasons += self.notice_problems()
         for item in self.items:
             if not item.get("text"):
                 reasons.append(f"{item['id']}: no approved text")
             if not item.get("audio"):
                 reasons.append(f"{item['id']}: no native-speaker audio")
         return reasons
+
+    def notice_problems(self) -> list[str]:
+        """Required explanations that are missing or heard too late."""
+        ids = self.item_ids()
+        problems: list[str] = []
+        for item_id, what in NOTICE_ITEMS.items():
+            if item_id not in ids:
+                problems.append(f"{item_id}: missing; the participant must hear {what}")
+        first_choice = ids.index("choice.record")
+        for item_id in _BEFORE_ANY_CHOICE:
+            if item_id in ids and ids.index(item_id) > first_choice:
+                problems.append(f"{item_id}: must come before the first choice")
+        if "explain.transfer_risk" in ids and ids.index("explain.transfer_risk") > ids.index("choice.external_share"):
+            problems.append("explain.transfer_risk: must come before choice.external_share")
+        return problems
 
     @property
     def releasable(self) -> bool:
