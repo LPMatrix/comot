@@ -80,7 +80,7 @@ def test_key_files_are_private_and_never_overwritten(tmp_path):
 def test_identity_never_enters_the_consent_database(open_db, dbpath, vault):
     c = open_db(vault=vault)
     pid, code = make_person(c)
-    c.store_identity(pid, actor_id="chw1", name="Amina Bello", phone="+2348012345678")
+    c.store_identity(pid, actor="chw1", name="Amina Bello", phone="+2348012345678")
     make_chain(c, pid)
     c.close()
     data = raw_bytes(dbpath)
@@ -90,8 +90,8 @@ def test_identity_never_enters_the_consent_database(open_db, dbpath, vault):
 def test_the_log_records_that_identity_was_touched_not_what_it_was(open_db, vault):
     c = open_db(vault=vault)
     pid, _ = make_person(c)
-    c.store_identity(pid, actor_id="chw1", name="Amina Bello")
-    assert c.read_identity(pid, actor_id="dpo_1") == {"name": "Amina Bello"}
+    c.store_identity(pid, actor="chw1", name="Amina Bello")
+    assert c.read_identity(pid, actor="dpo_1") == {"name": "Amina Bello"}
     kinds = [(e.event_type, e.actor_id, e.object_id) for e in c.log.entries if e.event_type.startswith("identity")]
     assert kinds == [("identity_stored", "chw1", pid), ("identity_read", "dpo_1", pid)]
     assert "Amina" not in str([e.to_dict() for e in c.log.entries])
@@ -100,27 +100,27 @@ def test_the_log_records_that_identity_was_touched_not_what_it_was(open_db, vaul
 def test_deleting_identity_leaves_consent_and_audit_intact(open_db, vault):
     c = open_db(vault=vault)
     pid, code = make_person(c)
-    c.store_identity(pid, actor_id="chw1", name="Amina Bello", phone="+234")
+    c.store_identity(pid, actor="chw1", name="Amina Bello", phone="+234")
     make_chain(c, pid)
-    assert c.delete_identity(pid, actor_id="dpo_1") is True
+    assert c.delete_identity(pid, actor="dpo_1") is True
     assert vault.get(pid) is None
     assert c.verify_integrity() == []
-    w = c.withdraw(PROJECT, code=code, channel="participant_code", actor_id="chw1")  # still works
+    w = c.withdraw(PROJECT, code=code, channel="participant_code", actor="chw1")  # still works
     assert c.coverage(w.withdrawal_id) == 1.0
 
 
 def test_identity_calls_need_a_vault_and_a_known_participant(comot, vault):
     pid, _ = make_person(comot)
     with pytest.raises(ComotError, match="no identity vault"):
-        comot.store_identity(pid, actor_id="chw1", name="x")
+        comot.store_identity(pid, actor="chw1", name="x")
     comot.vault = vault
     with pytest.raises(UnknownObject):
-        comot.store_identity("p_missing", actor_id="chw1", name="x")
+        comot.store_identity("p_missing", actor="chw1", name="x")
 
 
 def test_a_bundle_export_holds_no_identity(open_db, vault):
     c = open_db(vault=vault)
     pid, code = make_person(c)
-    c.store_identity(pid, actor_id="chw1", name="Amina Bello", phone="+2348012345678")
+    c.store_identity(pid, actor="chw1", name="Amina Bello", phone="+2348012345678")
     text = str(c.export_bundle())
     assert "Amina" not in text and "2348012345678" not in text

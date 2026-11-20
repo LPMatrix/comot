@@ -17,7 +17,7 @@ def comot(clock):
 
 
 def make_person(comot, answers=None, **extra):
-    pid, code = comot.create_participant("chw1")
+    pid, code = comot.create_participant(actor="chw1")
     comot.record_consent(
         pid,
         PROJECT,
@@ -25,7 +25,7 @@ def make_person(comot, answers=None, **extra):
         script_version="t-1",
         language="pcm",
         capture_method="spoken_yes_no",
-        chw_id="chw1",
+        actor="chw1",
         device_id="dev1",
         teach_back_score="5/5",
         **extra,
@@ -35,10 +35,10 @@ def make_person(comot, answers=None, **extra):
 
 def make_chain(comot, pid, content=b"audio"):
     """recording -> transcript -> dataset -> model"""
-    rec = comot.register_recording(pid, PROJECT, content=content, created_by="chw1")
-    tr = comot.register("transcript", [rec.artifact_id], "research", created_by="asr")
-    ds = comot.register("dataset_version", [tr.artifact_id], "model_training", created_by="dt")
-    model = comot.register("model_version", [ds.artifact_id], "model_training", created_by="dt")
+    rec = comot.register_recording(pid, PROJECT, content=content, actor="chw1")
+    tr = comot.register("transcript", [rec.artifact_id], "research", actor="asr")
+    ds = comot.register("dataset_version", [tr.artifact_id], "model_training", actor="dt")
+    model = comot.register("model_version", [ds.artifact_id], "model_training", actor="dt")
     return rec, tr, ds, model
 
 

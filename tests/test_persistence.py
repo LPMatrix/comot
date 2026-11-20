@@ -10,11 +10,11 @@ def busy(c):
     pid, code = make_person(c)
     rec, tr, ds, model = make_chain(c, pid)
     other, _ = make_person(c, {"record": True, "research": True})
-    orec = c.register_recording(other, PROJECT, content=b"o", created_by="chw1")
+    orec = c.register_recording(other, PROJECT, content=b"o", actor="chw1")
     with pytest.raises(ConsentRefused):
-        c.register("dataset_version", [orec.artifact_id], "model_training")  # logged refusal
-    w = c.withdraw(PROJECT, code=code, scope=["model_training"], channel="chw", actor_id="chw1")
-    c.complete_action(c.actions_for(w.withdrawal_id)[0].action_id, done_by="dt", evidence="e")
+        c.register("dataset_version", [orec.artifact_id], "model_training", actor="pipeline")  # logged refusal
+    w = c.withdraw(PROJECT, code=code, scope=["model_training"], channel="chw", actor="chw1")
+    c.complete_action(c.actions_for(w.withdrawal_id)[0].action_id, actor="dt", evidence="e")
     return pid, code, w
 
 
@@ -49,7 +49,7 @@ def test_work_continues_after_a_reopen(open_db):
     rec, tr, ds, model = make_chain(c, pid)
     c.close()
     c2 = open_db()
-    w = c2.withdraw(PROJECT, code=code, channel="participant_code", actor_id="chw1")
+    w = c2.withdraw(PROJECT, code=code, channel="participant_code", actor="chw1")
     assert c2.coverage(w.withdrawal_id) == 1.0
     assert c2.verify_integrity() == []
     assert c2.graph.artifacts[model.artifact_id].status == "tainted"
@@ -73,7 +73,7 @@ def test_a_failed_withdrawal_leaves_nothing_behind(open_db, monkeypatch):
 
     monkeypatch.setattr(comot.core, "plan_actions", flaky)
     with pytest.raises(ValueError, match="boom"):
-        c.withdraw(PROJECT, code=code, channel="chw", actor_id="chw1")
+        c.withdraw(PROJECT, code=code, channel="chw", actor="chw1")
 
     # Memory and database both look as if it never happened. Check memory first,
     # before any call that would reload by itself.
@@ -84,7 +84,7 @@ def test_a_failed_withdrawal_leaves_nothing_behind(open_db, monkeypatch):
     assert open_db().export_bundle() == before
 
     monkeypatch.setattr(comot.core, "plan_actions", real)
-    assert open_db().withdraw(PROJECT, code=code, channel="chw", actor_id="chw1")
+    assert open_db().withdraw(PROJECT, code=code, channel="chw", actor="chw1")
 
 
 def test_unexpected_store_error_resyncs_memory(open_db, monkeypatch):
@@ -94,18 +94,18 @@ def test_unexpected_store_error_resyncs_memory(open_db, monkeypatch):
     before = c.export_bundle()
     monkeypatch.setattr(c.store, "add_receipt", lambda r: (_ for _ in ()).throw(sqlite3.OperationalError("disk full")))
     with pytest.raises(sqlite3.OperationalError):
-        c.withdraw(PROJECT, code=code, channel="chw", actor_id="chw1")
+        c.withdraw(PROJECT, code=code, channel="chw", actor="chw1")
     assert c.export_bundle() == before
 
 
 def test_refusals_and_blocked_training_checks_are_kept(open_db):
     c = open_db()
     pid, _ = make_person(c, {"record": True, "research": True})
-    rec = c.register_recording(pid, PROJECT, content=b"x", created_by="chw1")
+    rec = c.register_recording(pid, PROJECT, content=b"x", actor="chw1")
     with pytest.raises(ConsentRefused):
-        c.register("dataset_version", [rec.artifact_id], "model_training")
+        c.register("dataset_version", [rec.artifact_id], "model_training", actor="pipeline")
     with pytest.raises(TrainingBlocked):
-        c.check_training_run([rec.artifact_id])
+        c.check_training_run([rec.artifact_id], actor="pipeline")
     c.close()
     c2 = open_db()
     assert len(c2.refusals) == 1
@@ -118,9 +118,9 @@ def test_a_rejected_call_writes_nothing(open_db):
     pid, code = make_person(c)
     n = len(c.log.entries)
     with pytest.raises(ValueError):
-        c.withdraw(PROJECT, code=code, scope=["nonsense"], channel="chw", actor_id="chw1")
+        c.withdraw(PROJECT, code=code, scope=["nonsense"], channel="chw", actor="chw1")
     with pytest.raises(ValueError):
-        c.complete_action("act_missing", done_by="x", evidence=" ")
+        c.complete_action("act_missing", actor="x", evidence=" ")
     assert len(c.log.entries) == n and c.store.log_length() == n
 
 
@@ -211,11 +211,11 @@ def test_a_second_process_sees_a_withdrawal_at_once(open_db):
     pid, code = make_person(a)
     rec, tr, ds, model = make_chain(a, pid)
     assert b.check_use(tr.artifact_id, "model_training").allowed
-    b.withdraw(PROJECT, code=code, channel="participant_code", actor_id="chw2")
+    b.withdraw(PROJECT, code=code, channel="participant_code", actor="chw2")
     # `a` never reloaded by hand, but its next check must not use stale consent.
     assert not a.check_use(tr.artifact_id, "model_training").allowed
     with pytest.raises(TrainingBlocked):
-        a.check_training_run([tr.artifact_id])
+        a.check_training_run([tr.artifact_id], actor="pipeline")
 
 
 def test_interleaved_writers_keep_the_chains_intact(open_db):
@@ -245,4 +245,4 @@ def test_a_writer_holds_the_lock_from_the_start(open_db):
     b.store._db.execute("PRAGMA busy_timeout = 50")
     with a._txn():
         with pytest.raises(sqlite3.OperationalError, match="locked"):
-            b.create_participant("chw")
+            b.create_participant(actor="chw")

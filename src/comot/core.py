@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
+from .access import AccessDenied, AccessPolicy, Actor
 from .anchor import Anchor, AnchorSink
 from .bundle import verify_state
 from .clock import Clock, iso, parse, system_clock
@@ -59,8 +60,10 @@ class Comot:
         store: NullStore | SqliteStore | None = None,
         vault: IdentityVault | None = None,
         verify: bool = True,
+        access: AccessPolicy | None = None,
     ):
         self.clock = clock
+        self.access = access
         self.signer = signer or HmacSigner()
         self.policy = policy or WithdrawalPolicy()
         self.store = store or NullStore()
@@ -70,6 +73,7 @@ class Comot:
         if self.store.persistent:
             self._check_signer()
             self._load(verify=verify)
+        self._record_policy()
 
     @classmethod
     def open(
@@ -81,6 +85,7 @@ class Comot:
         policy: WithdrawalPolicy | None = None,
         vault: IdentityVault | None = None,
         verify: bool = True,
+        access: AccessPolicy | None = None,
     ) -> "Comot":
         """Open, or create, a Comot backed by one SQLite file.
 
@@ -88,9 +93,18 @@ class Comot:
         and a fresh random key would silently break that. Use
         ``HmacSigner(load_key_file(...))``. With ``verify`` (the default) the
         hash chains and stored anchors are checked, and a store that fails
-        raises ``StoreIntegrityError``.
+        raises ``StoreIntegrityError``. With ``access`` every call needs an
+        ``Actor`` whose roles allow it.
         """
-        return cls(clock=clock, signer=signer, policy=policy, store=SqliteStore(path), vault=vault, verify=verify)
+        return cls(
+            clock=clock,
+            signer=signer,
+            policy=policy,
+            store=SqliteStore(path),
+            vault=vault,
+            verify=verify,
+            access=access,
+        )
 
     def close(self) -> None:
         self.store.close()
@@ -118,6 +132,45 @@ class Comot:
             time=self._now(), actor_id=actor_id, event_type=event_type, object_id=object_id, payload=payload
         )
         self.store.add_log(entry)
+
+    # ------------------------------------------------------------------ access
+
+    def _authorize(self, actor: Actor | str | None, operation: str, *, optional: bool = False) -> str:
+        """Check that the actor may do this, and return their id.
+
+        Without an access policy any named actor may do anything, as before.
+        With one, only an ``Actor`` whose roles grant the operation may. A
+        refusal is logged, and raised after that is committed.
+        """
+        if self.access is None:
+            if isinstance(actor, Actor):
+                return actor.id
+            if isinstance(actor, str) and actor.strip():
+                return actor
+            if actor is None and optional:
+                return "anonymous"
+            raise ValueError("an actor is required")
+        if isinstance(actor, Actor) and self.access.allows(actor, operation):
+            return actor.id
+        if isinstance(actor, Actor):
+            who, roles, why = actor.id, sorted(actor.roles), f"{actor.id} may not {operation}"
+        else:
+            who = actor if isinstance(actor, str) and actor.strip() else "unauthenticated"
+            roles = []
+            why = f"{operation} needs an authenticated Actor when an access policy is set"
+        with self._txn():
+            self._log(who, "access_denied", operation, {"operation": operation, "roles": roles})
+        raise AccessDenied(why, actor_id=who, operation=operation)
+
+    def _record_policy(self) -> None:
+        """Log which access policy is in force, whenever it differs from the last one logged."""
+        if self.access is None:
+            return
+        object_id = f"policy:{self.access.hash()}"
+        with self._txn():
+            last = next((e for e in reversed(self.log.entries) if e.event_type == "access_policy_set"), None)
+            if last is None or last.object_id != object_id:
+                self._log("system", "access_policy_set", object_id, self.access.to_dict())
 
     # -------------------------------------------------------------- persistence
 
@@ -190,12 +243,13 @@ class Comot:
 
     # ------------------------------------------------------------- participants
 
-    def create_participant(self, actor_id: str) -> tuple[str, str]:
+    def create_participant(self, *, actor: Actor | str) -> tuple[str, str]:
         """Create a pseudonymous participant. Returns (participant_id, spoken code).
 
         No name or phone number is stored here. Those belong in the separate
         identity vault (see ``store_identity``).
         """
+        actor_id = self._authorize(actor, "create_participant")
         with self._txn():
             pid = new_id("p")
             code = new_code(self._by_code)
@@ -225,8 +279,8 @@ class Comot:
         script_version: str,
         language: str,
         capture_method: str,
-        chw_id: str,
         device_id: str,
+        actor: Actor | str,
         teach_back_score: str | None = None,
         is_minor: bool = False,
         guardian_consent: bool | None = None,
@@ -235,8 +289,10 @@ class Comot:
         """Record a participant's choices as a new, append-only consent version.
 
         A missing or None answer counts as "no". A change that takes a use
-        away must go through ``withdraw`` so every copy gets an action.
+        away must go through ``withdraw`` so every copy gets an action. The
+        actor is recorded as the person who captured it.
         """
+        actor_id = self._authorize(actor, "record_consent")
         if capture_method not in CAPTURE_METHODS[:4]:
             raise ConsentError(f"capture_method must be one of {CAPTURE_METHODS[:4]}")
         choices = normalize_choices(answers)
@@ -261,13 +317,13 @@ class Comot:
                 language=language,
                 choices=choices,
                 capture_method=capture_method,
-                chw_id=chw_id,
+                chw_id=actor_id,
                 device_id=device_id,
                 teach_back_score=teach_back_score,
                 is_minor=is_minor,
                 guardian_consent=guardian_consent,
                 assent=assent,
-                actor_id=chw_id,
+                actor_id=actor_id,
             )
 
     def _append_consent(self, previous: ConsentRecord | None, *, actor_id: str, **fields: Any) -> ConsentRecord:
@@ -300,9 +356,10 @@ class Comot:
         content: bytes | None = None,
         content_hash: str | None = None,
         storage_uri: str | None = None,
-        created_by: str,
+        actor: Actor | str,
     ) -> Artifact:
         """Register a raw recording. It needs a consent record that accepts recording."""
+        created_by = self._authorize(actor, "register_recording")
         refused: ConsentRefused | None = None
         with self._txn():
             consent = self.latest_consent(participant_id, project_id)
@@ -339,13 +396,14 @@ class Comot:
         storage_uri: str | None = None,
         holder: str = INTERNAL,
         sharded: bool = False,
-        created_by: str = "pipeline",
+        actor: Actor | str,
     ) -> Artifact:
         """Register a derived copy. This is the one call a data team makes.
 
         Refused, and the refusal logged, if the consent behind any parent does
         not allow the intended use.
         """
+        created_by = self._authorize(actor, "register")
         if type not in ARTIFACT_TYPES or type == "recording":
             raise ValueError(f"type must be one of {[t for t in ARTIFACT_TYPES if t != 'recording']}")
         if purpose not in PURPOSES:
@@ -365,7 +423,7 @@ class Comot:
             blockers: list[tuple[str, str]] = []
             for parent in parents:
                 for use in required:
-                    blockers += self.check_use(parent, use).blockers
+                    blockers += self._check_use(parent, use).blockers
             if blockers:
                 blockers = sorted(set(blockers))
                 self._refuse(created_by, type, list(parents), purpose, blockers)
@@ -459,13 +517,18 @@ class Comot:
     def _open_action_artifacts(self) -> set[str]:
         return {a.artifact_id for a in self.actions.values() if a.done_at is None}
 
-    def check_use(self, artifact_id: str, purpose: str) -> UseDecision:
+    def check_use(self, artifact_id: str, purpose: str, *, actor: Actor | str | None = None) -> UseDecision:
         """May this artifact be used for this purpose? The strictest consent wins.
 
         Walks back to every source recording. Blocked if any one of those
         people has not accepted the use, if any copy on the way is gone, or if a
-        withdrawal still has an open action on a copy on the way.
+        withdrawal still has an open action on a copy on the way. The actor is
+        only needed when an access policy is set.
         """
+        self._authorize(actor, "check_use", optional=True)
+        return self._check_use(artifact_id, purpose)
+
+    def _check_use(self, artifact_id: str, purpose: str) -> UseDecision:
         if purpose not in PURPOSES:
             raise ValueError(f"purpose must be one of {PURPOSES}")
         if self._depth == 0:
@@ -486,23 +549,27 @@ class Comot:
                 blockers.append((r, f"consent does not allow {purpose}"))
         return UseDecision(allowed=not blockers, blockers=sorted(set(blockers)))
 
-    def filter_allowed(self, artifact_ids: Iterable[str], purpose: str) -> list[str]:
+    def filter_allowed(
+        self, artifact_ids: Iterable[str], purpose: str, *, actor: Actor | str | None = None
+    ) -> list[str]:
         """Keep only the artifacts that may be used for this purpose."""
-        return [a for a in artifact_ids if self.check_use(a, purpose).allowed]
+        self._authorize(actor, "check_use", optional=True)
+        return [a for a in artifact_ids if self._check_use(a, purpose).allowed]
 
     def check_training_run(
-        self, artifact_ids: Sequence[str], *, actor_id: str = "pipeline", strict: bool = True
+        self, artifact_ids: Sequence[str], *, actor: Actor | str, strict: bool = True
     ) -> TrainingCheck:
         """Pre-training check. Call it before every training run.
 
         With ``strict`` (the default) a run that includes any blocked item
         raises ``TrainingBlocked``, so a team cannot miss it.
         """
+        actor_id = self._authorize(actor, "check_training_run")
         allowed: list[str] = []
         blocked: list[tuple[str, str]] = []
         with self._txn():
             for a in artifact_ids:
-                decision = self.check_use(a, "model_training")
+                decision = self._check_use(a, "model_training")
                 if decision.allowed:
                     allowed.append(a)
                 else:
@@ -530,13 +597,16 @@ class Comot:
         code: str | None = None,
         scope: str | Sequence[str] = "all",
         channel: str,
-        actor_id: str,
+        actor: Actor | str,
     ) -> Withdrawal:
         """Withdraw all consent, or some uses, with no reason asked.
 
         Creates a new consent version, one action per affected copy, and
-        an initial receipt.
+        an initial receipt. When a participant withdraws by code through a
+        phone line or a health worker, the actor is the service or person
+        relaying it.
         """
+        actor_id = self._authorize(actor, "withdraw")
         if channel not in CHANNELS:
             raise ValueError(f"channel must be one of {CHANNELS}")
         if (participant_id is None) == (code is None):
@@ -612,10 +682,14 @@ class Comot:
                 if artifact.type == "model_version":
                     artifact.status = "tainted"
                     self.store.upsert_artifact(artifact)
-            self.issue_receipt(withdrawal.withdrawal_id, actor_id=actor_id)
+            self._issue_receipt(withdrawal.withdrawal_id, actor_id)
             return withdrawal
 
-    def actions_for(self, withdrawal_id: str) -> list[Action]:
+    def actions_for(self, withdrawal_id: str, *, actor: Actor | str | None = None) -> list[Action]:
+        self._authorize(actor, "view_actions", optional=True)
+        return self._actions_for(withdrawal_id)
+
+    def _actions_for(self, withdrawal_id: str) -> list[Action]:
         return [a for a in self.actions.values() if a.withdrawal_id == withdrawal_id]
 
     def _recordings_of(self, participant_id: str, project_id: str) -> list[str]:
@@ -625,22 +699,24 @@ class Comot:
             if a.type == "recording" and a.participant_id == participant_id and a.project_id == project_id
         ]
 
-    def coverage(self, withdrawal_id: str) -> float:
+    def coverage(self, withdrawal_id: str, *, actor: Actor | str | None = None) -> float:
         """Share of affected copies, found by walking the graph, that received an action.
 
         The target is 100%. It is computed from the graph and not from the
         actions, so a copy the planner missed lowers it. Copies that were
         already gone when the withdrawal arrived are not owed an action.
         """
+        self._authorize(actor, "view_actions", optional=True)
         w = self.withdrawals[withdrawal_id]
         revoked = None if w.scope == ["all"] else set(w.scope)
         affected = self.graph.affected_by(self._recordings_of(w.participant_id, w.project_id), revoked)
         owed = [a for a in affected if a not in w.already_gone]
-        with_action = {a.artifact_id for a in self.actions_for(withdrawal_id)}
+        with_action = {a.artifact_id for a in self._actions_for(withdrawal_id)}
         return 1.0 if not owed else len([a for a in owed if a in with_action]) / len(owed)
 
-    def complete_action(self, action_id: str, *, done_by: str, evidence: str) -> Action:
+    def complete_action(self, action_id: str, *, actor: Actor | str, evidence: str) -> Action:
         """Mark one action done, with who did it and proof."""
+        done_by = self._authorize(actor, "complete_action")
         if not evidence.strip():
             raise ValueError("evidence is required, for example a storage deletion id or a new dataset version id")
         with self._txn():
@@ -671,16 +747,21 @@ class Comot:
             return "done"
         return "overdue" if self.clock() > parse(action.due_at) else "pending"
 
-    def overdue_actions(self) -> list[Action]:
+    def overdue_actions(self, *, actor: Actor | str | None = None) -> list[Action]:
+        self._authorize(actor, "view_actions", optional=True)
+        return self._overdue_actions()
+
+    def _overdue_actions(self) -> list[Action]:
         if self._depth == 0:
             self.refresh()
         return [a for a in self.actions.values() if self.action_status(a) == "overdue"]
 
-    def escalate_overdue(self, actor_id: str = "system") -> list[Action]:
+    def escalate_overdue(self, *, actor: Actor | str) -> list[Action]:
         """Tell the board about overdue actions, once each."""
+        actor_id = self._authorize(actor, "escalate_overdue")
         newly: list[Action] = []
         with self._txn():
-            for a in self.overdue_actions():
+            for a in self._overdue_actions():
                 if not a.escalated:
                     a.escalated = True
                     newly.append(a)
@@ -688,12 +769,15 @@ class Comot:
                     self._log(actor_id, "action_overdue", a.action_id, a.to_dict())
         return newly
 
-    def issue_receipt(self, withdrawal_id: str, *, actor_id: str = "system") -> Receipt:
+    def issue_receipt(self, withdrawal_id: str, *, actor: Actor | str) -> Receipt:
         """Issue a signed receipt of what is done, what is pending, and what cannot be done."""
+        return self._issue_receipt(withdrawal_id, self._authorize(actor, "issue_receipt"))
+
+    def _issue_receipt(self, withdrawal_id: str, actor_id: str) -> Receipt:
         with self._txn():
             w = self.withdrawals[withdrawal_id]
             items = []
-            for a in self.actions_for(withdrawal_id):
+            for a in self._actions_for(withdrawal_id):
                 artifact = self.graph.artifacts[a.artifact_id]
                 items.append(
                     {
@@ -730,13 +814,14 @@ class Comot:
 
     # ----------------------------------------------------------------- anchors
 
-    def anchor(self, sink: AnchorSink, *, actor_id: str = "system") -> Anchor | None:
+    def anchor(self, sink: AnchorSink, *, actor: Actor | str) -> Anchor | None:
         """Publish the log's current head outside the store.
 
         Run it on a schedule, for example daily from cron, with a sink the
         store's writers cannot edit. Returns None when nothing has happened
         since the last anchor, so a quiet system does not anchor itself in circles.
         """
+        actor_id = self._authorize(actor, "anchor")
         with self._txn():
             if self.log.entries and self.log.entries[-1].event_type == "anchor_published":
                 return None
@@ -748,8 +833,9 @@ class Comot:
             self._log(actor_id, "anchor_published", f"anchor@{anchor.seq}", anchor.to_dict())
         return anchor
 
-    def verify_integrity(self, anchors: Iterable[Anchor] = ()) -> list[str]:
+    def verify_integrity(self, anchors: Iterable[Anchor] = (), *, actor: Actor | str | None = None) -> list[str]:
         """Re-check the chains and anchors. ``anchors`` may include an external anchor file."""
+        self._authorize(actor, "verify_integrity", optional=True)
         self.refresh()
         return verify_state(self.consents, self.log.entries, list(self.anchors) + list(anchors))
 
@@ -760,8 +846,9 @@ class Comot:
             raise ComotError("no identity vault is attached; pass vault=IdentityVault(...)")
         return self.vault
 
-    def store_identity(self, participant_id: str, *, actor_id: str, **fields: str | None) -> None:
+    def store_identity(self, participant_id: str, *, actor: Actor | str, **fields: str | None) -> None:
         """Keep a participant's name or phone in the vault. The audit log records that, never what."""
+        actor_id = self._authorize(actor, "store_identity")
         vault = self._need_vault()
         with self._txn():
             if participant_id not in self._participants:
@@ -769,15 +856,17 @@ class Comot:
             vault.put(participant_id, **fields)
             self._log(actor_id, "identity_stored", participant_id, {"participant_id": participant_id})
 
-    def read_identity(self, participant_id: str, *, actor_id: str) -> dict[str, Any] | None:
+    def read_identity(self, participant_id: str, *, actor: Actor | str) -> dict[str, Any] | None:
         """Read a participant's identity. Every read is logged against the person who made it."""
+        actor_id = self._authorize(actor, "read_identity")
         vault = self._need_vault()
         with self._txn():
             self._log(actor_id, "identity_read", participant_id, {"participant_id": participant_id})
             return vault.get(participant_id)
 
-    def delete_identity(self, participant_id: str, *, actor_id: str) -> bool:
+    def delete_identity(self, participant_id: str, *, actor: Actor | str) -> bool:
         """Erase a participant's identity alone. Consent records and the log are untouched."""
+        actor_id = self._authorize(actor, "delete_identity")
         vault = self._need_vault()
         with self._txn():
             deleted = vault.delete(participant_id)
@@ -786,12 +875,13 @@ class Comot:
 
     # ------------------------------------------------------------------ export
 
-    def export_bundle(self) -> dict[str, Any]:
+    def export_bundle(self, *, actor: Actor | str | None = None) -> dict[str, Any]:
         """A signed export for ethics committees and auditors.
 
         Holds pseudonymous ids, hashes and statuses only. Participant codes,
         storage locations and anything from the identity vault are left out on purpose.
         """
+        self._authorize(actor, "export_bundle", optional=True)
         self.refresh()
         artifacts = []
         for a in self.graph.artifacts.values():

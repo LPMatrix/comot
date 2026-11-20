@@ -23,7 +23,7 @@ def rewrite_from(entries, k, **changes):
 def test_anchor_publishes_the_head_and_logs_it(comot):
     pid, _ = make_person(comot)
     sink = ListSink()
-    a = comot.anchor(sink)
+    a = comot.anchor(sink, actor="system")
     assert [(x.seq, x.head, x.time) for x in sink.anchors] == [(a.seq, a.head, a.time)]
     assert a.seq == len(comot.log.entries) - 1  # the anchor's own log entry comes after it
     assert comot.log.entries[-1].event_type == "anchor_published"
@@ -33,10 +33,10 @@ def test_anchor_publishes_the_head_and_logs_it(comot):
 def test_a_quiet_system_does_not_anchor_itself_in_circles(comot):
     make_person(comot)
     sink = ListSink()
-    assert comot.anchor(sink)
-    assert comot.anchor(sink) is None
+    assert comot.anchor(sink, actor="system")
+    assert comot.anchor(sink, actor="system") is None
     make_person(comot)
-    assert comot.anchor(sink)
+    assert comot.anchor(sink, actor="system")
     assert len(sink.anchors) == 2
 
 
@@ -49,7 +49,7 @@ def test_a_failed_publish_records_nothing(comot):
             raise OSError("anchor volume is not mounted")
 
     with pytest.raises(OSError):
-        comot.anchor(Broken())
+        comot.anchor(Broken(), actor="system")
     assert comot.anchors == [] and len(comot.log.entries) == n
 
 
@@ -57,7 +57,7 @@ def test_a_consistent_rewrite_passes_the_chain_check_but_not_the_anchor(comot):
     pid, code = make_person(comot)
     make_chain(comot, pid)
     sink = ListSink()
-    comot.anchor(sink)
+    comot.anchor(sink, actor="system")
     make_person(comot)
 
     forged = rewrite_from(comot.log.entries, 2, actor_id="someone_else")
@@ -71,7 +71,7 @@ def test_a_rewrite_after_the_last_anchor_is_not_caught_yet(comot):
     # Honest about the limit: an anchor only protects what came before it.
     make_person(comot)
     sink = ListSink()
-    comot.anchor(sink)
+    comot.anchor(sink, actor="system")
     make_person(comot)
     forged = rewrite_from(comot.log.entries, len(comot.log.entries) - 1, actor_id="someone_else")
     assert verify_anchors(forged, sink.anchors) == []
@@ -81,13 +81,13 @@ def test_truncation_is_caught(comot):
     make_person(comot)
     make_person(comot)
     sink = ListSink()
-    comot.anchor(sink)
+    comot.anchor(sink, actor="system")
     problems = verify_anchors(comot.log.entries[:2], sink.anchors)
     assert problems and "truncated" in problems[0]
 
 
 def test_an_empty_log_anchors_to_genesis(comot):
-    a = comot.anchor(ListSink())
+    a = comot.anchor(ListSink(), actor="system")
     assert a.seq == 0 and verify_anchors([], [a]) == []
 
 
@@ -95,7 +95,7 @@ def test_bundle_checks_external_anchors(comot):
     pid, _ = make_person(comot)
     make_chain(comot, pid)
     sink = ListSink()
-    comot.anchor(sink)
+    comot.anchor(sink, actor="system")
     bundle = json.loads(json.dumps(comot.export_bundle()))
     assert verify_bundle(bundle, comot.signer.key, sink.anchors) == []
 
@@ -110,9 +110,9 @@ def test_bundle_checks_external_anchors(comot):
 def test_file_sink_appends_json_lines(tmp_path, comot):
     f = tmp_path / "anchors.jsonl"
     make_person(comot)
-    comot.anchor(FileAnchorSink(f))
+    comot.anchor(FileAnchorSink(f), actor="system")
     make_person(comot)
-    comot.anchor(FileAnchorSink(f))
+    comot.anchor(FileAnchorSink(f), actor="system")
     read = read_anchor_file(f)
     assert [a.seq for a in read] == [a.seq for a in comot.anchors]
     assert verify_anchors(comot.log.entries, read) == []
@@ -132,7 +132,7 @@ def test_stored_anchors_catch_a_rewritten_database_on_open(open_db, dbpath, sign
     c = open_db()
     pid, _ = make_person(c)
     make_chain(c, pid)
-    c.anchor(ListSink())
+    c.anchor(ListSink(), actor="system")
     c.close()
 
     # Rewrite the log consistently and drop the triggers, leaving the anchors table alone.

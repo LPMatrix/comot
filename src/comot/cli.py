@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
                 json.dump(comot.export_bundle(), f, indent=2)
             print(f"bundle written to {args.out}")
         else:
-            a = comot.anchor(FileAnchorSink(args.out))
+            a = comot.anchor(FileAnchorSink(args.out), actor="cli")
             print("nothing new to anchor" if a is None else f"anchored log head at entry {a.seq} to {a.sink}")
         comot.close()
         return 0

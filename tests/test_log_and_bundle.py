@@ -12,7 +12,7 @@ jsonschema = pytest.importorskip("jsonschema")
 def busy(comot):
     pid, code = make_person(comot)
     make_chain(comot, pid)
-    comot.withdraw(PROJECT, code=code, scope=["model_training"], channel="chw", actor_id="chw1")
+    comot.withdraw(PROJECT, code=code, scope=["model_training"], channel="chw", actor="chw1")
 
 
 def test_log_chain_is_intact_and_detects_edits(comot):
@@ -48,7 +48,7 @@ def test_bundle_verifies_and_signature_needs_the_key(comot):
 
 def test_bundle_leaves_out_storage_locations_and_codes(comot):
     pid, code = make_person(comot)
-    comot.register_recording(pid, PROJECT, content=b"x", storage_uri="s3://secret/path.wav", created_by="chw1")
+    comot.register_recording(pid, PROJECT, content=b"x", storage_uri="s3://secret/path.wav", actor="chw1")
     text = json.dumps(comot.export_bundle())
     assert "secret/path" not in text
     assert "participant_code" not in text and "code" not in " ".join(comot.export_bundle()["consents"][0])
