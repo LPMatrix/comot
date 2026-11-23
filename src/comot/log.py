@@ -30,6 +30,8 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "identity_deleted",
         "access_denied",
         "access_policy_set",
+        "signing_key_rotated",
+        "vault_key_rotated",
     }
 )
 

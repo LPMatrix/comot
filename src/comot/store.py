@@ -15,8 +15,11 @@ access to the file from dropping them, which is what the hash chains and the
 published anchors are for.
 
 One writer at a time is safe. A second process may read and write too: each
-operation takes SQLite's write lock first and reloads if another process got
-there before it.
+operation takes SQLite's write lock first and, if another process got there
+before it, reads only what changed since. Rows that change after they are
+written (artifact status, withdrawals, actions) carry a revision number, and
+every other table is read by sequence number, so catching up costs what changed
+and not the size of the database.
 """
 from __future__ import annotations
 
@@ -35,11 +38,25 @@ from .log import LogEntry
 from .receipt import Receipt
 from .withdrawal import Action, Withdrawal
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 class StoreError(Exception):
     """The store cannot be opened or is unusable."""
+
+
+_SEQ_TABLES = ("participants", "consents", "log_entries", "edges", "receipts", "refusals", "anchors")
+
+
+@dataclass(frozen=True)
+class Cursor:
+    """How far a reader has read: the last sequence number of each append-only table, and the revision."""
+
+    rev: int = 0
+    seqs: tuple[tuple[str, int], ...] = tuple((t, 0) for t in _SEQ_TABLES)
+
+    def seq(self, table: str) -> int:
+        return dict(self.seqs)[table]
 
 
 @dataclass
@@ -56,6 +73,7 @@ class StoreState:
     receipts: list[Receipt] = field(default_factory=list)
     refusals: list[dict[str, Any]] = field(default_factory=list)
     anchors: list[Anchor] = field(default_factory=list)
+    cursor: Cursor | None = None  # where this snapshot ends, so the next read can start there
 
 
 class NullStore:
@@ -69,6 +87,12 @@ class NullStore:
 
     def load(self) -> StoreState:
         return StoreState()
+
+    def load_since(self, cursor: Cursor | None) -> StoreState:
+        return StoreState()
+
+    def cursor(self) -> Cursor | None:
+        return None
 
     def log_length(self) -> int:
         return 0
@@ -152,7 +176,8 @@ CREATE TABLE artifacts (
     created_at TEXT NOT NULL,
     status TEXT NOT NULL,
     destination_country TEXT,
-    transfer_basis TEXT
+    transfer_basis TEXT,
+    rev INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX artifacts_content_hash ON artifacts (content_hash);
 CREATE INDEX artifacts_owner ON artifacts (participant_id, project_id);
@@ -178,7 +203,8 @@ CREATE TABLE withdrawals (
     received_at TEXT NOT NULL,
     consent_id TEXT NOT NULL,
     already_gone TEXT NOT NULL,
-    receipt_id TEXT
+    receipt_id TEXT,
+    rev INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE actions (
@@ -191,10 +217,14 @@ CREATE TABLE actions (
     done_at TEXT,
     done_by TEXT,
     evidence TEXT,
-    escalated INTEGER NOT NULL
+    escalated INTEGER NOT NULL,
+    rev INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX actions_withdrawal ON actions (withdrawal_id);
 CREATE INDEX actions_open ON actions (done_at);
+CREATE INDEX actions_rev ON actions (rev);
+CREATE INDEX artifacts_rev ON artifacts (rev);
+CREATE INDEX withdrawals_rev ON withdrawals (rev);
 
 CREATE TABLE receipts (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,7 +267,9 @@ class SqliteStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         new = not self.path.exists()
-        self._db = sqlite3.connect(self.path, isolation_level=None)  # we manage transactions
+        # We manage transactions. Comot is not thread-safe, so a caller that uses it from several
+        # threads (the HTTP server does) must serialise calls; the connection itself may then move between them.
+        self._db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         if new:
             try:
@@ -248,6 +280,7 @@ class SqliteStore:
         self._db.execute("PRAGMA synchronous = FULL")
         self._db.execute("PRAGMA busy_timeout = 5000")
         self._depth = 0
+        self._txn_rev: int | None = None
         version = self._db.execute("PRAGMA user_version").fetchone()[0]
         if version == 0:
             self._create()
@@ -288,13 +321,23 @@ class SqliteStore:
             yield
         except BaseException:
             self._depth -= 1
-            if self._depth == 0 and self._db.in_transaction:
-                self._db.execute("ROLLBACK")
+            if self._depth == 0:
+                self._txn_rev = None
+                if self._db.in_transaction:
+                    self._db.execute("ROLLBACK")
             raise
         else:
             self._depth -= 1
             if self._depth == 0:
+                self._txn_rev = None
                 self._db.execute("COMMIT")
+
+    def _rev(self) -> int:
+        """The revision stamped on rows changed in this transaction. Taken at the first such change."""
+        if self._txn_rev is None:
+            self._txn_rev = int(self.get_meta("rev") or 0) + 1
+            self.set_meta("rev", str(self._txn_rev))
+        return self._txn_rev
 
     # -------------------------------------------------------------------- meta
 
@@ -337,13 +380,13 @@ class SqliteStore:
     def upsert_artifact(self, a: Artifact) -> None:
         self._db.execute(
             "INSERT INTO artifacts (artifact_id, type, content_hash, storage_uri, holder, sharded, participant_id,"
-            " project_id, created_by, created_at, status, destination_country, transfer_basis)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(artifact_id) DO UPDATE SET status = excluded.status",
+            " project_id, created_by, created_at, status, destination_country, transfer_basis, rev)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(artifact_id) DO UPDATE SET status = excluded.status, rev = excluded.rev",
             (
                 a.artifact_id, a.type, a.content_hash, a.storage_uri, a.holder, int(a.sharded),
                 a.participant_id, a.project_id, a.created_by, a.created_at, a.status,
-                a.destination_country, a.transfer_basis,
+                a.destination_country, a.transfer_basis, self._rev(),
             ),
         )
 
@@ -356,21 +399,21 @@ class SqliteStore:
     def upsert_withdrawal(self, w: Withdrawal) -> None:
         self._db.execute(
             "INSERT INTO withdrawals (withdrawal_id, participant_id, project_id, scope, channel, received_at,"
-            " consent_id, already_gone, receipt_id) VALUES (?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(withdrawal_id) DO UPDATE SET receipt_id = excluded.receipt_id",
+            " consent_id, already_gone, receipt_id, rev) VALUES (?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(withdrawal_id) DO UPDATE SET receipt_id = excluded.receipt_id, rev = excluded.rev",
             (
                 w.withdrawal_id, w.participant_id, w.project_id, json.dumps(w.scope), w.channel,
-                w.received_at, w.consent_id, json.dumps(w.already_gone), w.receipt_id,
+                w.received_at, w.consent_id, json.dumps(w.already_gone), w.receipt_id, self._rev(),
             ),
         )
 
     def upsert_action(self, a: Action) -> None:
         self._db.execute(
             "INSERT INTO actions (action_id, withdrawal_id, artifact_id, kind, due_at, done_at, done_by, evidence,"
-            " escalated) VALUES (?,?,?,?,?,?,?,?,?)"
+            " escalated, rev) VALUES (?,?,?,?,?,?,?,?,?,?)"
             " ON CONFLICT(action_id) DO UPDATE SET done_at = excluded.done_at, done_by = excluded.done_by,"
-            " evidence = excluded.evidence, escalated = excluded.escalated",
-            (a.action_id, a.withdrawal_id, a.artifact_id, a.kind, a.due_at, a.done_at, a.done_by, a.evidence, int(a.escalated)),
+            " evidence = excluded.evidence, escalated = excluded.escalated, rev = excluded.rev",
+            (a.action_id, a.withdrawal_id, a.artifact_id, a.kind, a.due_at, a.done_at, a.done_by, a.evidence, int(a.escalated), self._rev()),
         )
 
     def add_receipt(self, r: Receipt) -> None:
@@ -395,11 +438,38 @@ class SqliteStore:
     def log_length(self) -> int:
         return self._db.execute("SELECT COALESCE(MAX(seq), 0) FROM log_entries").fetchone()[0]
 
+    def cursor(self) -> Cursor:
+        """Where the database ends now. Call it inside a transaction for a consistent answer."""
+        seqs = tuple(
+            (t, self._db.execute(f"SELECT COALESCE(MAX(seq), 0) FROM {t}").fetchone()[0]) for t in _SEQ_TABLES
+        )
+        return Cursor(rev=int(self.get_meta("rev") or 0), seqs=seqs)
+
     def load(self) -> StoreState:
-        q = lambda sql: self._db.execute(sql).fetchall()  # noqa: E731
+        """Everything, from one consistent snapshot."""
+        return self.load_since(None)
+
+    def load_since(self, cursor: Cursor | None) -> StoreState:
+        """What was added or changed after ``cursor``, from one consistent snapshot. ``None`` means everything."""
+        started = not self._db.in_transaction
+        if started:
+            self._db.execute("BEGIN")  # a read snapshot, so a writer cannot slip in between tables
+        try:
+            return self._read(cursor)
+        finally:
+            if started:
+                self._db.execute("COMMIT")
+
+    def _read(self, cursor: Cursor | None) -> StoreState:
+        after = (lambda t: 0) if cursor is None else cursor.seq
+        rev = -1 if cursor is None else cursor.rev
+        q = lambda sql, *args: self._db.execute(sql, args).fetchall()  # noqa: E731
         state = StoreState()
-        state.participants = [(r["participant_id"], r["code"]) for r in q("SELECT * FROM participants ORDER BY seq")]
-        for r in q("SELECT * FROM consents ORDER BY seq"):
+        state.participants = [
+            (r["participant_id"], r["code"])
+            for r in q("SELECT * FROM participants WHERE seq > ? ORDER BY seq", after("participants"))
+        ]
+        for r in q("SELECT * FROM consents WHERE seq > ? ORDER BY seq", after("consents")):
             state.consents.append(
                 ConsentRecord(
                     consent_id=r["consent_id"], participant_id=r["participant_id"], project_id=r["project_id"],
@@ -414,7 +484,7 @@ class SqliteStore:
             )
         state.log = [
             LogEntry(r["seq"], r["time"], r["actor_id"], r["event_type"], r["object_id"], r["payload_hash"], r["prev_hash"], r["hash"])
-            for r in q("SELECT * FROM log_entries ORDER BY seq")
+            for r in q("SELECT * FROM log_entries WHERE seq > ? ORDER BY seq", after("log_entries"))
         ]
         state.artifacts = [
             Artifact(
@@ -424,11 +494,11 @@ class SqliteStore:
                 created_at=r["created_at"], status=r["status"],
                 destination_country=r["destination_country"], transfer_basis=r["transfer_basis"],
             )
-            for r in q("SELECT * FROM artifacts ORDER BY seq")
+            for r in q("SELECT * FROM artifacts WHERE rev > ? ORDER BY seq", rev)
         ]
         state.edges = [
             LineageEdge(r["parent_id"], r["child_id"], r["purpose"], r["created_by"], r["created_at"])
-            for r in q("SELECT * FROM edges ORDER BY seq")
+            for r in q("SELECT * FROM edges WHERE seq > ? ORDER BY seq", after("edges"))
         ]
         state.withdrawals = [
             Withdrawal(
@@ -436,7 +506,7 @@ class SqliteStore:
                 scope=json.loads(r["scope"]), channel=r["channel"], received_at=r["received_at"],
                 consent_id=r["consent_id"], already_gone=json.loads(r["already_gone"]), receipt_id=r["receipt_id"],
             )
-            for r in q("SELECT * FROM withdrawals ORDER BY seq")
+            for r in q("SELECT * FROM withdrawals WHERE rev > ? ORDER BY seq", rev)
         ]
         state.actions = [
             Action(
@@ -444,7 +514,7 @@ class SqliteStore:
                 kind=r["kind"], due_at=r["due_at"], done_at=r["done_at"], done_by=r["done_by"],
                 evidence=r["evidence"], escalated=bool(r["escalated"]),
             )
-            for r in q("SELECT * FROM actions ORDER BY seq")
+            for r in q("SELECT * FROM actions WHERE rev > ? ORDER BY seq", rev)
         ]
         state.receipts = [
             Receipt(
@@ -452,8 +522,14 @@ class SqliteStore:
                 scope=json.loads(r["scope"]), items=json.loads(r["items"]), limits=json.loads(r["limits"]),
                 signature=r["signature"],
             )
-            for r in q("SELECT * FROM receipts ORDER BY seq")
+            for r in q("SELECT * FROM receipts WHERE seq > ? ORDER BY seq", after("receipts"))
         ]
-        state.refusals = [json.loads(r["body"]) for r in q("SELECT * FROM refusals ORDER BY seq")]
-        state.anchors = [Anchor(r["log_seq"], r["head"], r["time"], r["sink"]) for r in q("SELECT * FROM anchors ORDER BY seq")]
+        state.refusals = [
+            json.loads(r["body"]) for r in q("SELECT * FROM refusals WHERE seq > ? ORDER BY seq", after("refusals"))
+        ]
+        state.anchors = [
+            Anchor(r["log_seq"], r["head"], r["time"], r["sink"])
+            for r in q("SELECT * FROM anchors WHERE seq > ? ORDER BY seq", after("anchors"))
+        ]
+        state.cursor = self.cursor()
         return state

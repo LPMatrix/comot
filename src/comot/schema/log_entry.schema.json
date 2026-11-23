@@ -16,7 +16,7 @@
         "registration_refused", "training_check", "withdrawal_received", "action_created",
         "action_completed", "action_overdue", "receipt_issued", "anchor_published",
         "identity_stored", "identity_read", "identity_deleted",
-        "access_denied", "access_policy_set"
+        "access_denied", "access_policy_set", "signing_key_rotated", "vault_key_rotated"
       ]
     },
     "object_id": { "type": "string" },

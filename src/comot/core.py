@@ -7,6 +7,7 @@ the rules here are what it will wrap.
 """
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any, Iterable, Iterator, Sequence
 
 from .access import AccessDenied, AccessPolicy, Actor
 from .anchor import Anchor, AnchorSink
-from .bundle import verify_state
+from .bundle import BUNDLE_FORMAT, objects_from, verify_state
 from .clock import Clock, iso, parse, system_clock
 from .consent import CAPTURE_METHODS, PURPOSES, USES, ConsentRecord, check_guardian_verification, normalize_choices
 from .errors import ComotError, ConsentError, ConsentRefused, StoreIntegrityError, TrainingBlocked, UnknownObject
@@ -25,11 +26,11 @@ from .log import AuditLog
 from .receipt import (
     LIMIT_MODEL_WEIGHTS,
     LIMIT_PUBLISHED_RESULTS,
-    HmacSigner,
     Receipt,
     sign_body,
 )
-from .store import NullStore, SqliteStore, StoreError
+from .signing import Ed25519Signer, HmacSigner, KeyRing
+from .store import Cursor, NullStore, SqliteStore, StoreError, StoreState
 from .vault import IdentityVault
 from .withdrawal import CHANNELS, Action, Withdrawal, WithdrawalPolicy, plan_actions
 
@@ -55,15 +56,24 @@ class Comot:
     def __init__(
         self,
         clock: Clock = system_clock,
-        signer: HmacSigner | None = None,
+        signer: HmacSigner | Ed25519Signer | KeyRing | None = None,
         policy: WithdrawalPolicy | None = None,
         store: NullStore | SqliteStore | None = None,
         vault: IdentityVault | None = None,
         verify: bool = True,
         access: AccessPolicy | None = None,
+        anchor_sink: AnchorSink | None = None,
+        anchor_every: int = 1,
     ):
+        if anchor_every < 1:
+            raise ValueError("anchor_every must be at least 1")
         self.clock = clock
         self.access = access
+        self.anchor_sink = anchor_sink
+        self.anchor_every = anchor_every
+        self.anchor_errors: list[str] = []
+        self._rotation: tuple[str, str] | None = None
+        self._cursor: Cursor | None = None
         self.signer = signer or HmacSigner()
         self.policy = policy or WithdrawalPolicy()
         self.store = store or NullStore()
@@ -71,8 +81,9 @@ class Comot:
         self._depth = 0
         self._reset()
         if self.store.persistent:
-            self._check_signer()
+            self._check_signer(verify)
             self._load(verify=verify)
+        self._record_rotation()
         self._record_policy()
 
     @classmethod
@@ -80,21 +91,26 @@ class Comot:
         cls,
         path: str | Path,
         *,
-        signer: HmacSigner,
+        signer: HmacSigner | Ed25519Signer | KeyRing,
         clock: Clock = system_clock,
         policy: WithdrawalPolicy | None = None,
         vault: IdentityVault | None = None,
         verify: bool = True,
         access: AccessPolicy | None = None,
+        anchor_sink: AnchorSink | None = None,
+        anchor_every: int = 1,
     ) -> "Comot":
         """Open, or create, a Comot backed by one SQLite file.
 
         A signer is required, because receipts signed earlier must still verify
-        and a fresh random key would silently break that. Use
-        ``HmacSigner(load_key_file(...))``. With ``verify`` (the default) the
-        hash chains and stored anchors are checked, and a store that fails
-        raises ``StoreIntegrityError``. With ``access`` every call needs an
-        ``Actor`` whose roles allow it.
+        and a fresh random key would silently break that. Use ``load_signer(path)``.
+        To rotate the key, pass ``KeyRing(new, retired=[old])``: the store records
+        the change and the old key keeps verifying what it signed. With ``verify``
+        (the default) the hash chains, stored anchors and every stored object are
+        checked, and a store that fails raises ``StoreIntegrityError``. With
+        ``access`` every call needs an ``Actor`` whose roles allow it. With
+        ``anchor_sink`` the log head is published automatically once ``anchor_every``
+        entries have gone unanchored, so a rewrite can only reach back that far.
         """
         return cls(
             clock=clock,
@@ -104,6 +120,8 @@ class Comot:
             vault=vault,
             verify=verify,
             access=access,
+            anchor_sink=anchor_sink,
+            anchor_every=anchor_every,
         )
 
     def close(self) -> None:
@@ -174,21 +192,58 @@ class Comot:
 
     # -------------------------------------------------------------- persistence
 
-    def _check_signer(self) -> None:
-        """A store remembers a fingerprint of its signing key and refuses a different one."""
-        fp = sha256_hex(b"comot-signer-fingerprint" + self.signer.key)
+    def _check_signer(self, verify: bool) -> None:
+        """A store remembers which signing keys it has used and refuses an unrelated one.
+
+        A new key is accepted only when the key ring still holds the one it replaces,
+        and then the change is recorded. Every earlier key must stay in the ring, or
+        receipts signed with it could no longer be checked.
+        """
+        ids = list(self.signer.key_ids)
+        current = ids[0]
         with self.store.transaction():
-            known = self.store.get_meta("signer_fingerprint")
-            if known is None:
-                self.store.set_meta("signer_fingerprint", fp)
-            elif known != fp:
-                raise StoreError("this store was created with a different signing key")
+            raw = self.store.get_meta("signing_keys")
+            if raw is None:
+                self.store.set_meta("signing_keys", json.dumps({"current": current, "history": [current]}))
+                return
+            record = json.loads(raw)
+            history: list[str] = record["history"]
+            if current != record["current"]:
+                if record["current"] not in ids:
+                    raise StoreError(
+                        "this store was created with a different signing key; to rotate, pass "
+                        "KeyRing(new_key, retired=[old_key]) so the old key still verifies"
+                    )
+                if current in history:
+                    raise StoreError("that signing key was retired and cannot be made current again")
+                self._rotation = (record["current"], current)
+                history.append(current)
+                self.store.set_meta("signing_keys", json.dumps({"current": current, "history": history}))
+            missing = [k for k in history if k not in ids]
+            if missing and verify:
+                raise StoreError(
+                    f"the key ring lacks earlier signing keys {missing}; receipts signed with them could not be checked"
+                )
+
+    def _record_rotation(self) -> None:
+        """Log a signing key change once, in the same open that made it."""
+        if self._rotation is None:
+            return
+        old, new = self._rotation
+        self._rotation = None
+        with self._txn():
+            self._log("system", "signing_key_rotated", new, {"from": old, "to": new, "algorithm": self.signer.algorithm})
 
     def _load(self, *, verify: bool = False) -> None:
         """Rebuild working state from the store."""
         state = self.store.load()
         if verify:
-            problems = verify_state(state.consents, state.log, state.anchors)
+            problems = verify_state(
+                state.consents,
+                state.log,
+                state.anchors,
+                objects_from(state.artifacts, state.edges, state.withdrawals, state.actions, state.receipts, state.refusals),
+            )
             if problems:
                 raise StoreIntegrityError(problems)
         self._reset()
@@ -209,11 +264,59 @@ class Comot:
         self.receipts = {r.receipt_id: r for r in state.receipts}
         self.refusals = list(state.refusals)
         self.anchors = list(state.anchors)
+        self._cursor = state.cursor
 
     def refresh(self) -> None:
-        """Reload if another process has written since we last looked."""
+        """Catch up with another process that has written since we last looked.
+
+        Only what changed is read, so this costs the size of the change and not the
+        size of the database.
+        """
         if self.store.persistent and self.store.log_length() != len(self.log.entries):
-            self._load()
+            self._apply(self.store.load_since(self._cursor))
+
+    def _apply(self, delta: StoreState) -> None:
+        """Merge a read of what changed into the working state. Equivalent to a full reload, only cheaper."""
+        problems: list[str] = []
+        if delta.log and delta.log[0].prev_hash != self.log.head:
+            problems.append("audit log: new entries do not continue the chain this process holds")
+        if delta.consents and delta.consents[0].prev_hash != (self.consents[-1].hash if self.consents else GENESIS):
+            problems.append("consent records: new versions do not continue the chain this process holds")
+        if problems:
+            raise StoreIntegrityError(problems)
+        for pid, code in delta.participants:
+            self._participants[pid] = code
+            self._by_code[code] = pid
+        for rec in delta.consents:
+            self.consents.append(rec)
+            self._latest[(rec.participant_id, rec.project_id)] = rec
+        self.log.entries.extend(delta.log)
+        into: dict[str, list[LineageEdge]] = {}
+        for e in delta.edges:
+            into.setdefault(e.child_id, []).append(e)
+        for a in delta.artifacts:  # creation order, so parents always exist first
+            known = self.graph.artifacts.get(a.artifact_id)
+            if known is None:
+                self.graph.add(a, into.get(a.artifact_id, []))
+            else:
+                known.status = a.status  # the only thing that changes after registration
+        for w in delta.withdrawals:
+            known_w = self.withdrawals.get(w.withdrawal_id)
+            if known_w is None:
+                self.withdrawals[w.withdrawal_id] = w
+            else:
+                known_w.__dict__.update(w.__dict__)  # keep the object callers may hold
+        for act in delta.actions:
+            known_a = self.actions.get(act.action_id)
+            if known_a is None:
+                self.actions[act.action_id] = act
+            else:
+                known_a.__dict__.update(act.__dict__)
+        for r in delta.receipts:
+            self.receipts[r.receipt_id] = r
+        self.refusals.extend(delta.refusals)
+        self.anchors.extend(delta.anchors)
+        self._cursor = delta.cursor
 
     @contextmanager
     def _txn(self) -> Iterator[None]:
@@ -225,12 +328,16 @@ class Comot:
         outermost = self._depth == 0
         start = len(self.log.entries)
         self._depth += 1
+        committed = False
         try:
             with self.store.transaction():
                 if outermost:
                     self.refresh()  # we hold the write lock now, so this is current
                     start = len(self.log.entries)
                 yield
+                if outermost and self.store.persistent:
+                    self._cursor = self.store.cursor()  # our own writes are already in memory
+            committed = True
         except BaseException as e:
             # A plain validation error before any write leaves memory untouched.
             # Anything else may have changed memory the database did not keep.
@@ -240,6 +347,20 @@ class Comot:
             raise
         finally:
             self._depth -= 1
+        if outermost and committed:
+            self._auto_anchor()
+
+    def _auto_anchor(self) -> None:
+        """Publish the log head once enough entries have gone unanchored. Never fails the call that triggered it."""
+        if self.anchor_sink is None:
+            return
+        covered = self.anchors[-1].seq + 1 if self.anchors else 0  # the anchor's own entry follows what it covers
+        if len(self.log.entries) - covered < self.anchor_every:
+            return
+        try:  # once it commits nothing is unanchored, so the transaction it runs in does not trigger another
+            self._anchor(self.anchor_sink, "system")
+        except Exception as e:  # the data change already committed; report the failed anchor instead
+            self.anchor_errors.append(f"{self._now()}: {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------- participants
 
@@ -527,7 +648,7 @@ class Comot:
                 created_by,
                 "artifact_registered",
                 artifact.artifact_id,
-                {"artifact": artifact.to_dict(), "edges": [e.to_dict() for e in edges]},
+                {"artifact": artifact.public_dict(), "edges": [e.to_dict() for e in edges]},
             )
         return artifact
 
@@ -860,7 +981,9 @@ class Comot:
         store's writers cannot edit. Returns None when nothing has happened
         since the last anchor, so a quiet system does not anchor itself in circles.
         """
-        actor_id = self._authorize(actor, "anchor")
+        return self._anchor(sink, self._authorize(actor, "anchor"))
+
+    def _anchor(self, sink: AnchorSink, actor_id: str) -> Anchor | None:
         with self._txn():
             if self.log.entries and self.log.entries[-1].event_type == "anchor_published":
                 return None
@@ -876,7 +999,11 @@ class Comot:
         """Re-check the chains and anchors. ``anchors`` may include an external anchor file."""
         self._authorize(actor, "verify_integrity", optional=True)
         self.refresh()
-        return verify_state(self.consents, self.log.entries, list(self.anchors) + list(anchors))
+        objects = objects_from(
+            self.graph.artifacts.values(), self.graph.edges, self.withdrawals.values(),
+            self.actions.values(), self.receipts.values(), self.refusals,
+        )
+        return verify_state(self.consents, self.log.entries, list(self.anchors) + list(anchors), objects)
 
     # ---------------------------------------------------------------- identity
 
@@ -903,6 +1030,18 @@ class Comot:
             self._log(actor_id, "identity_read", participant_id, {"participant_id": participant_id})
             return vault.get(participant_id)
 
+    def rotate_vault_key(self, new_key: bytes, *, actor: Actor | str) -> None:
+        """Re-encrypt every identity under a new key, all or nothing, and log that it happened.
+
+        After this the old key opens nothing. Keep the new key as carefully as the
+        old one, and destroy old backups of the vault if they should stop being readable.
+        """
+        actor_id = self._authorize(actor, "rotate_vault_key")
+        vault = self._need_vault()
+        with self._txn():
+            vault.rotate(new_key)
+            self._log(actor_id, "vault_key_rotated", "vault", {"rotated": True})
+
     def delete_identity(self, participant_id: str, *, actor: Actor | str) -> bool:
         """Erase a participant's identity alone. Consent records and the log are untouched."""
         actor_id = self._authorize(actor, "delete_identity")
@@ -922,13 +1061,9 @@ class Comot:
         """
         self._authorize(actor, "export_bundle", optional=True)
         self.refresh()
-        artifacts = []
-        for a in self.graph.artifacts.values():
-            d = a.to_dict()
-            d.pop("storage_uri")
-            artifacts.append(d)
+        artifacts = [a.public_dict() for a in self.graph.artifacts.values()]  # locations appear only as hashes
         body = {
-            "format": "comot-bundle/0",
+            "format": BUNDLE_FORMAT,
             "exported_at": self._now(),
             "consents": [c.to_dict() for c in self.consents],
             "log": [e.to_dict() for e in self.log.entries],

@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from comot import Comot, ConsentRefused, HmacSigner, StoreError, StoreIntegrityError, TrainingBlocked
+from comot import Comot, ConsentRefused, HmacSigner, StoreError, StoreIntegrityError, TrainingBlocked, load_signer
 from conftest import PROJECT, make_chain, make_person
 
 
@@ -233,7 +233,7 @@ def test_demo_can_run_into_a_database(tmp_path):
     db, key = tmp_path / "demo.db", tmp_path / "demo.key"
     c = run_demo(lambda _: None, db=db, key_file=key)
     c.close()
-    c2 = Comot.open(db, signer=HmacSigner.from_file(key))
+    c2 = Comot.open(db, signer=load_signer(key))
     assert c2.verify_integrity() == [] and c2.withdrawals
     with pytest.raises(FileExistsError):
         run_demo(lambda _: None, db=db, key_file=key)

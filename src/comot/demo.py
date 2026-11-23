@@ -8,7 +8,8 @@ from .access import AccessDenied, AccessPolicy, Actor
 from .clock import ManualClock
 from .core import Comot
 from .errors import ConsentRefused, TrainingBlocked
-from .receipt import HmacSigner, render_receipt
+from .receipt import render_receipt
+from .signing import HmacSigner, generate_signer_file, load_signer
 
 PROJECT = "demo-synthetic"
 
@@ -28,7 +29,14 @@ def run_demo(
     else:
         if Path(db).exists():
             raise FileExistsError(f"{db} already exists; the demo needs a new database")
-        signer = HmacSigner.from_file(key_file, create=True) if key_file else HmacSigner()
+        if key_file and Path(key_file).exists():
+            signer = load_signer(key_file)
+        elif key_file:
+            from .cli import default_algorithm
+
+            signer = generate_signer_file(key_file, default_algorithm())
+        else:
+            signer = HmacSigner()
         comot = Comot.open(db, signer=signer, clock=clock, access=AccessPolicy.default())
 
     def say(title: str) -> None:

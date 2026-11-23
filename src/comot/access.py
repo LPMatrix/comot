@@ -40,6 +40,7 @@ OPERATIONS: tuple[str, ...] = (
     "store_identity",
     "read_identity",
     "delete_identity",
+    "rotate_vault_key",
 )
 
 DEFAULT_POLICY: dict[str, Any] = {
@@ -79,6 +80,7 @@ DEFAULT_POLICY: dict[str, Any] = {
             "export_bundle",
             "read_identity",
             "delete_identity",
+            "rotate_vault_key",
         ],
     },
 }

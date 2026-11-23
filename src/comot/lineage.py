@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
 from .errors import UnknownObject
+from .hashing import sha256_hex
 
 ARTIFACT_TYPES: tuple[str, ...] = (
     "recording",
@@ -71,6 +72,13 @@ class Artifact:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def public_dict(self) -> dict[str, Any]:
+        """What the audit log and exports carry: the storage location is replaced by its hash."""
+        d = asdict(self)
+        uri = d.pop("storage_uri")
+        d["storage_uri_hash"] = sha256_hex(uri.encode()) if uri else None
+        return d
 
 
 @dataclass(frozen=True)

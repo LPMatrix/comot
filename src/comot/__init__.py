@@ -6,7 +6,17 @@ from .clock import ManualClock
 from .consent import PURPOSES, USES, ConsentRecord
 from .core import Comot, TrainingCheck, UseDecision
 from .errors import ComotError, ConsentError, ConsentRefused, StoreIntegrityError, TrainingBlocked, UnknownObject
-from .receipt import HmacSigner, render_receipt
+from .receipt import render_receipt
+from .signing import (
+    Ed25519Signer,
+    Ed25519Verifier,
+    HmacSigner,
+    KeyRing,
+    SigningError,
+    generate_signer_file,
+    load_signer,
+    load_verifier,
+)
 from .store import SqliteStore, StoreError
 from .vault import IdentityVault, VaultError, generate_key_file, load_key_file
 from .withdrawal import WithdrawalPolicy
@@ -14,6 +24,13 @@ from .withdrawal import WithdrawalPolicy
 __version__ = "0.1.0"
 
 __all__ = [
+    "Ed25519Signer",
+    "Ed25519Verifier",
+    "KeyRing",
+    "SigningError",
+    "generate_signer_file",
+    "load_signer",
+    "load_verifier",
     "AccessDenied",
     "AccessPolicy",
     "Actor",

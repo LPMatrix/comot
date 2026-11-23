@@ -62,7 +62,7 @@ class IdentityVault:
         self._clock = clock
         self.path = Path(path)
         new = not self.path.exists()
-        self._db = sqlite3.connect(self.path, isolation_level=None)
+        self._db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)  # callers serialise; see SqliteStore
         if new:
             try:
                 os.chmod(self.path, 0o600)
@@ -129,6 +129,34 @@ class IdentityVault:
             return False
         cur = self._db.execute("DELETE FROM identities WHERE participant_id = ?", (participant_id,))
         return cur.rowcount > 0
+
+    def rotate(self, new_key: bytes) -> int:
+        """Re-encrypt every record under ``new_key`` in one transaction. Returns how many.
+
+        If any record cannot be read with the current key nothing changes. Once it
+        commits the old key opens nothing.
+        """
+        if len(new_key) != KEY_BYTES:
+            raise VaultError(f"key must be {KEY_BYTES} bytes")
+        new_aead = AESGCM(new_key)
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self._db.execute("SELECT participant_id, nonce, ciphertext FROM identities").fetchall()
+            plain = [(pid, self._open(pid, nonce, ct)) for pid, nonce, ct in rows]  # fails before any write
+            now = iso(self._clock())
+            for pid, data in plain:
+                nonce = secrets.token_bytes(12)
+                ct = new_aead.encrypt(nonce, json.dumps(data, sort_keys=True).encode(), pid.encode())
+                self._db.execute(
+                    "UPDATE identities SET nonce = ?, ciphertext = ?, updated_at = ? WHERE participant_id = ?",
+                    (nonce, ct, now, pid),
+                )
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        self._aead = new_aead
+        return len([p for p, _ in plain if p != _CHECK_ID])
 
     def ids(self) -> list[str]:
         rows = self._db.execute("SELECT participant_id FROM identities WHERE participant_id != ?", (_CHECK_ID,))

@@ -171,6 +171,7 @@ CALLS = {
     "store_identity": lambda c, a: c.store_identity(c.pid, actor=a, name="x"),
     "read_identity": lambda c, a: c.read_identity(c.pid, actor=a),
     "delete_identity": lambda c, a: c.delete_identity(c.pid, actor=a),
+    "rotate_vault_key": lambda c, a: c.rotate_vault_key(b"n" * 32, actor=a),
 }
 
 
