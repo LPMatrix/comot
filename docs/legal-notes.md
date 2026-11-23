@@ -52,4 +52,4 @@ These sit outside Comot.
 
 ## Upgrading
 
-Adding these fields changed the consent record, so existing hashes and databases do not carry over. Databases at schema version 1 are refused with a clear error and there is no migration yet, because v0.1 holds no real participants. Exports made before this change do not verify with this version.
+Adding the guardian and transfer fields changed the consent record, and later changes (signed key ids, a hashed storage location in the log, revision numbers for catching up) changed what is stored again. Existing hashes, signatures and databases do not carry over. A database from an older schema version is refused with a clear error, and there is no migration yet because v0.1 holds no real participants. Exports and receipts made by an earlier version do not verify with this one.

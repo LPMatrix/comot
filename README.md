@@ -64,18 +64,18 @@ Every call that changes something says who is acting with `actor=`. That name go
 `Comot()` is a plain in-memory object, good for tests and notebooks. To keep state, open a SQLite file:
 
 ```bash
-uv run comot keygen signing.key        # a random key, readable only by you. Back it up.
+uv run comot keygen signing.key        # a new Ed25519 key, readable only by you. Back it up.
 ```
 
 ```python
-from comot import Comot, HmacSigner
+from comot import Comot, load_signer
 
-comot = Comot.open("comot.db", signer=HmacSigner.from_file("signing.key"))
+comot = Comot.open("comot.db", signer=load_signer("signing.key"))
 # ... use it exactly as above. Every call is committed before it returns.
 comot.close()
 ```
 
-The signing key is required, because receipts signed last month must still verify. The database remembers which key it was created with and refuses a different one.
+The signing key is required, because receipts signed last month must still verify. The database remembers which keys it has used and refuses an unrelated one. An Ed25519 key lets an auditor check receipts and exports with a public key alone, and a key can be rotated without breaking what it signed earlier.
 
 See [Operating it](#operating-it) for integrity checks, the identity vault and anchoring.
 
@@ -96,7 +96,7 @@ comot.withdraw("my-project", code=code, scope="all", channel="chw", actor=team)
 # AccessDenied: data_team_2 may not withdraw. The refusal is in the audit log.
 ```
 
-The default roles are health worker, data team, board, auditor and data protection officer. The role table is a small JSON file that a board can read and change, and the audit log records which table was in force. Comot does not authenticate anyone: it trusts the `Actor` it is given. See [docs/operations.md](docs/operations.md#access-control) for the table and what it does not cover.
+The default roles are health worker, data team, board, auditor and data protection officer. The role table is a small JSON file that a board can read and change, and the audit log records which table was in force. As a library Comot takes the `Actor` you give it at your word. For network callers, `comot serve` turns a bearer token into the `Actor`, so the roles are enforced at a real boundary. See [docs/operations.md](docs/operations.md#access-control) for the table and what it does not cover.
 
 ## How it works
 
@@ -132,7 +132,9 @@ Comot keeps everything in one SQLite file, keeps names and phone numbers in a se
 - [Persistence](docs/operations.md#persistence): atomic calls, append-only triggers, integrity checks on open, several processes.
 - [Identity vault](docs/operations.md#identity-vault): encrypted, kept apart from consent records, erasable on its own.
 - [Anchoring the audit log](docs/operations.md#anchoring-the-audit-log): what a hash chain alone cannot catch, and the command that closes the gap.
+- [Signing keys](docs/operations.md#signing-keys): Ed25519 so auditors need no secret, and rotation.
 - [Access control](docs/operations.md#access-control): the default roles, writing your own, and what is logged.
+- [Serving it over HTTP](docs/operations.md#serving-it-over-http): bearer tokens, TLS, and the endpoints.
 
 ## Design principles
 
@@ -160,24 +162,22 @@ What exists today:
 - SQLite persistence with atomic operations, append-only triggers, and integrity checks on open
 - an encrypted identity vault, separate from the consent database
 - role-based access control with a policy a board can read, and every refusal logged
-- audit log anchoring to an external file, and verification against it
+- audit log anchoring to an external file, automatic after each change if you like, and verification against it
+- Ed25519 signatures, so an auditor verifies with a public key, and key rotation for both the signing and vault keys
+- an exported bundle that checks every artifact, edge, withdrawal, action, receipt and refusal against the audit log
+- an HTTP API with bearer-token authentication, TLS, and the access policy enforced per request
+- incremental catch-up between processes, with scale measured in `benchmarks/scale.py`
 - language pack loader and release gate, which also requires the explanations the law says a person must hear
 - a record of how guardian consent was verified, and of the basis for every transfer outside Nigeria
-- a synthetic-data demo and 241 tests
+- a synthetic-data demo and 395 tests
 
-Known limits:
+What it does not do:
 
-- Receipts and exports are signed with HMAC, which only proves integrity to someone holding the key. An asymmetric signature is needed for independent auditors.
-- An anchor protects the log only up to the moment it was published. Something rewritten after the last anchor goes unnoticed until the next one.
-- `verify_bundle` cross-checks consent records against the log. It does not yet cross-check artifacts, actions or receipts.
-- Access control trusts the `Actor` it is given and guards Comot's methods only. It does not authenticate callers, and it does not stop code that holds the `Comot` object, or someone who owns the database file, from reading state directly. Authenticate callers yourself and keep the object behind your service.
-- SQLite suits one host and a small team. There is no key rotation for the signing or vault keys, and losing a key loses the ability to verify receipts or read the vault.
-- Nothing here is legal advice. The design follows the Nigeria Data Protection Act 2023 and the Commission's 2025 directive, which allow spoken consent, and it treats health-related voice data as sensitive. [docs/legal-notes.md](docs/legal-notes.md) shows how each rule is met and which readings still need a lawyer. Laws outside Nigeria are not covered, and a deployment still owes its own impact assessment and registration.
+Comot makes tampering detectable and misuse refusable. It cannot stop someone who owns the database file from deleting it, or code in the same process from reading its memory, so run it behind `comot serve` and keep anchors somewhere the database's writers cannot reach. It runs on one host with one SQLite file, measured to 30,000 participants. Nothing here is legal advice: the design follows the Nigeria Data Protection Act 2023 and the Commission's 2025 directive, which allow spoken consent, and it treats health-related voice data as sensitive. [docs/legal-notes.md](docs/legal-notes.md) shows how each rule is met and which readings still need a lawyer, and a deployment still owes its own impact assessment and registration. The full list, with what to do about each, is in [docs/operations.md](docs/operations.md#what-this-does-and-does-not-protect-against).
 
 Planned:
 
-- a service with a documented API and a PostgreSQL store behind the same interface
-- key rotation, and an asymmetric signature so auditors can verify without a shared key
+- a PostgreSQL store behind the same interface, for several hosts writing to one database
 - an offline field app for collecting spoken consent on low-cost Android phones
 - board-owned access policy and a request-and-licence flow for outside teams
 - status checks by USSD, WhatsApp or a health worker, with messages that reveal nothing on a shared phone
@@ -206,6 +206,9 @@ src/comot/
   store.py       SQLite store (and the no-op in-memory store)
   anchor.py      publish and verify audit log anchors
   access.py      actors, roles and the access policy
+  signing.py     HMAC and Ed25519 signers, key rings for rotation
+  auth.py        bearer tokens turned into actors
+  server.py      the HTTP API
   vault.py       encrypted identity vault
   core.py        the Comot service object
   bundle.py      verify an exported bundle
@@ -214,6 +217,7 @@ src/comot/
   schema/        JSON Schema for consent records and log entries
 language_packs/  draft Pidgin skeleton
 docs/            operator notes, and how the design meets Nigerian law
+benchmarks/      scale.py: how Comot behaves as a database grows
 tests/
 ```
 
