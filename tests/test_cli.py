@@ -157,3 +157,28 @@ def test_vault_rotation_through_the_cli(tmp_path, capsys):
     c = Comot.open(db, signer=load_signer(key))
     assert [e.actor_id for e in c.log.entries if e.event_type == "vault_key_rotated"] == ["cli"]
     c.close()
+
+
+def test_tokens_are_made_shown_once_and_revoked(tmp_path, capsys):
+    tokens = tmp_path / "t.json"
+    assert run("token-new", "--tokens", tokens, "--actor", "chw_1", "--role", "health_worker", "--days", "30") == 0
+    captured = capsys.readouterr()
+    token = captured.out.strip()
+    assert token.startswith("cmt_") and "only time" in captured.err
+    assert token not in tokens.read_text() and stat.S_IMODE(os.stat(tokens).st_mode) == 0o600
+    with pytest.raises(SystemExit):  # a token with no role is not a thing
+        run("token-new", "--tokens", tokens, "--actor", "chw_2")
+    capsys.readouterr()
+    assert run("token-revoke", "--tokens", tokens, "--actor", "chw_1") == 0
+    assert "removed 1" in capsys.readouterr().out
+    assert json.loads(tokens.read_text())["tokens"] == []
+
+
+def test_serve_needs_an_access_policy_and_refuses_open_networks(tmp_path, capsys):
+    key, db, tokens = tmp_path / "k", tmp_path / "d.db", tmp_path / "t.json"
+    run("keygen", key)
+    run("demo", "--db", db, "--key-file", key)
+    run("token-new", "--tokens", tokens, "--actor", "a", "--role", "dpo")
+    capsys.readouterr()
+    assert run("serve", db, "--key-file", key, "--tokens", tokens, "--host", "0.0.0.0", "--port", "0") == 2
+    assert "clear text" in capsys.readouterr().out

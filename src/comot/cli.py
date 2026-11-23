@@ -1,4 +1,4 @@
-"""Command line: run the demo, keep a database healthy, rotate keys, verify exports."""
+"""Command line: run the demo, keep a database healthy, rotate keys, serve the API, verify exports."""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +8,7 @@ from importlib import resources
 
 from .access import AccessPolicy, Actor
 from .anchor import FileAnchorSink, read_anchor_file
+from .auth import AuthError, TokenAuthenticator, issue_token, revoke_tokens
 from .bundle import load_bundle, verify_bundle
 from .core import Comot
 from .demo import run_demo
@@ -106,6 +107,31 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--public-key", metavar="KEY", help="an Ed25519 public key (ed25519:<hex>) or a file holding one")
     verify.add_argument("--anchors", metavar="FILE", help="an anchor file kept outside the bundle's source")
 
+    serve = sub.add_parser("serve", help="serve the HTTP API, with bearer-token authentication and the access policy")
+    serve.add_argument("db")
+    _add_key_args(serve)
+    serve.add_argument("--policy", metavar="FILE", help="access policy JSON (default: the built-in roles)")
+    serve.add_argument("--tokens", required=True, metavar="FILE", help="token file made with: comot token-new")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument("--anchor-file", metavar="FILE", help="publish the log head here after every change, and on POST /v1/anchor")
+    serve.add_argument("--anchor-every", type=int, default=1, metavar="N", help="entries allowed between anchors (default 1: every change)")
+    serve.add_argument("--vault", metavar="FILE", help="identity vault file")
+    serve.add_argument("--vault-key", metavar="FILE", help="the vault's key file")
+    serve.add_argument("--tls-cert", metavar="FILE")
+    serve.add_argument("--tls-key", metavar="FILE")
+    serve.add_argument("--behind-tls-proxy", action="store_true", help="allow a non-local address because a proxy in front handles TLS")
+
+    tnew = sub.add_parser("token-new", help="make an API token for an actor; it is shown once and only its hash is kept")
+    tnew.add_argument("--tokens", required=True, metavar="FILE")
+    tnew.add_argument("--actor", required=True)
+    tnew.add_argument("--role", action="append", required=True, dest="roles")
+    tnew.add_argument("--days", type=int, help="expire after this many days")
+
+    trev = sub.add_parser("token-revoke", help="remove every token for an actor")
+    trev.add_argument("--tokens", required=True, metavar="FILE")
+    trev.add_argument("--actor", required=True)
+
     schema = sub.add_parser("schema", help="print a JSON Schema")
     schema.add_argument("which", choices=sorted(SCHEMAS))
 
@@ -116,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return _run(args)
-    except (SigningError, VaultError, OSError, ValueError) as e:
+    except (SigningError, AuthError, VaultError, OSError, ValueError) as e:
         print(f"error: {e}")
         return 2
 
@@ -156,9 +182,18 @@ def _run(args: argparse.Namespace) -> int:
             print(f"verify it with: comot verify {args.export} {how}")
         return 0
 
-    if args.cmd in ("check", "export", "anchor", "rotate-key", "vault-rotate"):
+    if args.cmd in ("check", "export", "anchor", "rotate-key", "vault-rotate", "serve"):
         try:
             kwargs = {}
+            if args.cmd == "serve":
+                kwargs["access"] = AccessPolicy.load(args.policy) if args.policy else AccessPolicy.default()
+                if args.anchor_file:
+                    kwargs.update(anchor_sink=FileAnchorSink(args.anchor_file), anchor_every=args.anchor_every)
+                if args.vault:
+                    if not args.vault_key:
+                        print("error: --vault needs --vault-key")
+                        return 2
+                    kwargs["vault"] = IdentityVault(args.vault, load_key_file(args.vault_key))
             if args.cmd == "vault-rotate":
                 kwargs["vault"] = IdentityVault(args.vault, load_key_file(args.vault_key))
             comot = _open(args.db, args.key_file, args.retired_key, **kwargs)
@@ -174,6 +209,16 @@ def _run(args: argparse.Namespace) -> int:
             return _after_open(args, comot)
         finally:
             comot.close()
+
+    if args.cmd == "token-new":
+        token = issue_token(args.tokens, args.actor, args.roles, days=args.days)
+        print(token)
+        print(f"token for {args.actor} ({', '.join(sorted(set(args.roles)))}) added to {args.tokens}. This is the only time it is shown.", file=sys.stderr)
+        return 0
+
+    if args.cmd == "token-revoke":
+        print(f"removed {revoke_tokens(args.tokens, args.actor)} token(s) for {args.actor}")
+        return 0
 
     if args.cmd == "verify":
         verifier = None
@@ -239,6 +284,23 @@ def _after_open(args: argparse.Namespace, comot: Comot) -> int:
     elif args.cmd == "vault-rotate":
         comot.rotate_vault_key(load_key_file(args.new_vault_key), actor="cli")
         print("identity vault re-encrypted under the new key. Destroy old backups if they should stop being readable.")
+    elif args.cmd == "serve":
+        from .auth import TokenAuthenticator as _Auth
+        from .server import make_server
+
+        server = make_server(
+            comot, _Auth.load(args.tokens), host=args.host, port=args.port,
+            anchor_sink=FileAnchorSink(args.anchor_file) if args.anchor_file else None,
+            certfile=args.tls_cert, keyfile=args.tls_key, behind_tls_proxy=args.behind_tls_proxy,
+        )
+        scheme = "https" if args.tls_cert else "http"
+        print(f"serving {scheme}://{args.host}:{server.server_address[1]}  (Ctrl-C to stop)", flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nstopped")
+        finally:
+            server.server_close()
     return 0
 
 

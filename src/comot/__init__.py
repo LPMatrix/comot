@@ -1,5 +1,6 @@
 """Comot: an open consent and withdrawal layer for Nigerian-language voice data."""
 from .access import DEFAULT_POLICY, OPERATIONS, AccessDenied, AccessPolicy, Actor
+from .auth import TokenAuthenticator, issue_token, revoke_tokens
 from .anchor import Anchor, FileAnchorSink, read_anchor_file
 from .bundle import verify_bundle
 from .clock import ManualClock
@@ -7,6 +8,7 @@ from .consent import PURPOSES, USES, ConsentRecord
 from .core import Comot, TrainingCheck, UseDecision
 from .errors import ComotError, ConsentError, ConsentRefused, StoreIntegrityError, TrainingBlocked, UnknownObject
 from .receipt import render_receipt
+from .server import make_server
 from .signing import (
     Ed25519Signer,
     Ed25519Verifier,
@@ -28,9 +30,13 @@ __all__ = [
     "Ed25519Verifier",
     "KeyRing",
     "SigningError",
+    "TokenAuthenticator",
     "generate_signer_file",
+    "issue_token",
     "load_signer",
     "load_verifier",
+    "make_server",
+    "revoke_tokens",
     "AccessDenied",
     "AccessPolicy",
     "Actor",
