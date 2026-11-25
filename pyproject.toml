@@ -9,6 +9,7 @@ dependencies = []
 
 [project.optional-dependencies]
 vault = ["cryptography>=42"]
+huggingface = ["datasets>=3"]
 
 [project.scripts]
 comot = "comot.cli:main"

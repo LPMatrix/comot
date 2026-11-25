@@ -59,6 +59,18 @@ for action in comot.actions_for(w.withdrawal_id):
 
 Every call that changes something says who is acting with `actor=`. That name goes into the audit log next to what was done.
 
+### Use Hugging Face Datasets
+
+Install `comot[huggingface]` to register a local Hugging Face split. Keep a
+Comot artifact ID for the source of each row (the default column is
+`artifact_id`). `register_split` requires consent from every source.
+`filter_allowed` selects eligible rows in their original order and registers
+a dataset version with their lineage. Both return the dataset and its artifact.
+Check the registered artifact again before training because consent can change.
+
+The [runnable example](examples/huggingface_consent.ipynb) fits a small model on
+fictional data and shows the blockers after a contributor withdraws.
+
 ### Keep it in a database
 
 `Comot()` is a plain in-memory object, good for tests and notebooks. To keep state, open a SQLite file:
